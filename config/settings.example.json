@@ -1,0 +1,17 @@
+{
+  "exchange": {
+    "name": "binance",
+    "api_key": "YOUR_API_KEY_HERE",
+    "api_secret": "YOUR_API_SECRET_HERE",
+    "testnet": true
+  },
+  "data": {
+    "symbols": ["BTCUSDT", "ETHUSDT"],
+    "timeframe": "1h",
+    "data_dir": "./data"
+  },
+  "logging": {
+    "level": "INFO",
+    "log_dir": "./logs"
+  }
+}
