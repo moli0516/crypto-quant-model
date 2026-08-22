@@ -44,6 +44,7 @@ logs/
 *.log
 .pytest_cache/
 .mypy_cache/
+logs_test/
 /models/
 !/src/models/
 .coverage
