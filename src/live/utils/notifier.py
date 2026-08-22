@@ -7,8 +7,8 @@ load_dotenv()
 
 # Telegram Bot Configuration
 # 請在此填入你的 Token 與 Chat ID
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8855113948:AAG6bWywXuNhgcmARGzPh37XvevwsWzXhBw")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "8542793869")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 def send_telegram_alert(message: str):
     """Send notification via Telegram API."""
