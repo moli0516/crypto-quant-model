@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 from telegram import Update, BotCommand
 from telegram.ext import Application, CommandHandler, ContextTypes
 from dotenv import load_dotenv
+import sys
 
 load_dotenv()
 
@@ -188,9 +189,12 @@ async def diag_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_msg = await update.message.reply_text("🔬 正在執行模型診斷分析腳本 (scripts.analyst_log)...")
     
     try:
-        # 非同步執行外部 Python 模組：python -m scripts.analyst_log
+        # 動態取得當前運行的 Python 解譯器路徑 (自動適應 Windows/Linux/Virtualenv)
+        python_executable = sys.executable
+
+        # 非同步執行外部 Python 模組
         process = await asyncio.create_subprocess_exec(
-            'python', '-m', 'scripts.analyst_log',
+            python_executable, '-m', 'scripts.analyst_log',
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
