@@ -1,0 +1,97 @@
+{
+    "initial_balance": 200.0,
+    "cash": 0.0,
+    "total_equity": 201.02666374156084,
+    "open_positions": [
+        {
+            "trade_id": "T-202608222100-ICPUSDT",
+            "symbol": "ICPUSDT",
+            "entry_time": "2026-08-22 21:00:10",
+            "entry_price": 2.374000072479248,
+            "margin": 20.0,
+            "qty": 8.42459957430133,
+            "prob": 0.5421757102012634
+        },
+        {
+            "trade_id": "T-202608222200-BTCUSDT",
+            "symbol": "BTCUSDT",
+            "entry_time": "2026-08-22 22:00:11",
+            "entry_price": 76856.0078125,
+            "margin": 20.0,
+            "qty": 0.0002602268914200246,
+            "prob": 0.5417251586914062
+        },
+        {
+            "trade_id": "T-202608222200-ETHUSDT",
+            "symbol": "ETHUSDT",
+            "entry_time": "2026-08-22 22:00:11",
+            "entry_price": 2407.5400390625,
+            "margin": 20.0,
+            "qty": 0.00830723463597641,
+            "prob": 0.5373207926750183
+        },
+        {
+            "trade_id": "T-202608222200-AVAXUSDT",
+            "symbol": "AVAXUSDT",
+            "entry_time": "2026-08-22 22:00:11",
+            "entry_price": 7.454999923706055,
+            "margin": 20.0,
+            "qty": 2.6827632735987383,
+            "prob": 0.5509601831436157
+        },
+        {
+            "trade_id": "T-202608222200-LINKUSDT",
+            "symbol": "LINKUSDT",
+            "entry_time": "2026-08-22 22:00:11",
+            "entry_price": 11.505999565124512,
+            "margin": 20.0,
+            "qty": 1.7382236012437717,
+            "prob": 0.5711217522621155
+        },
+        {
+            "trade_id": "T-202608222200-DOTUSDT",
+            "symbol": "DOTUSDT",
+            "entry_time": "2026-08-22 22:00:11",
+            "entry_price": 0.9100000262260437,
+            "margin": 20.0,
+            "qty": 21.97802134461918,
+            "prob": 0.5538300275802612
+        },
+        {
+            "trade_id": "T-202608222200-NEARUSDT",
+            "symbol": "NEARUSDT",
+            "entry_time": "2026-08-22 22:00:11",
+            "entry_price": 1.8839999437332153,
+            "margin": 20.0,
+            "qty": 10.61571156969849,
+            "prob": 0.5488759875297546
+        },
+        {
+            "trade_id": "T-202608222200-ATOMUSDT",
+            "symbol": "ATOMUSDT",
+            "entry_time": "2026-08-22 22:00:11",
+            "entry_price": 1.5709999799728394,
+            "margin": 20.0,
+            "qty": 12.730744910859753,
+            "prob": 0.5385836958885193
+        },
+        {
+            "trade_id": "T-202608222200-APTUSDT",
+            "symbol": "APTUSDT",
+            "entry_time": "2026-08-22 22:00:11",
+            "entry_price": 0.6240000128746033,
+            "margin": 20.0,
+            "qty": 32.05128138998793,
+            "prob": 0.5505680441856384
+        },
+        {
+            "trade_id": "T-202608222200-RENDERUSDT",
+            "symbol": "RENDERUSDT",
+            "entry_time": "2026-08-22 22:00:11",
+            "entry_price": 1.440000057220459,
+            "margin": 20.0,
+            "qty": 13.888888336994052,
+            "prob": 0.5593372583389282
+        }
+    ]
+}
