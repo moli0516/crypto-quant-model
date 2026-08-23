@@ -21,7 +21,7 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 STATE_FILE = "logs/paper_account_state.json"
 TRADES_FILE = "logs/paper_trades.csv"
 EQUITY_FILE = "logs/paper_equity_daily.csv"
-DIAGNOSTIC_IMG = "logs/diagnostic.png"
+DIAGNOSTIC_IMG = "logs/diagnostic_report.png"
 
 # ----------------------------------------------------
 # 輔助函式
