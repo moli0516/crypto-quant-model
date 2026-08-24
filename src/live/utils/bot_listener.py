@@ -7,8 +7,8 @@ import pandas as pd
 import matplotlib
 matplotlib.use('Agg')  # 無 GUI 環境（如 EC2）繪圖必備
 import matplotlib.pyplot as plt
-from telegram import Update, BotCommand
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram import Update, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from dotenv import load_dotenv
 import sys
 
@@ -37,6 +37,62 @@ def get_binance_prices() -> dict:
         logger.error(f"抓取幣安現價失敗: {e}")
         return {}
 
+def calculate_live_equity(state: dict, live_prices: dict) -> tuple[float, float]:
+    """
+    實時計算：Total Equity = Cash + 每一筆持倉的現值 (qty * live_price)
+    回傳: (live_total_equity, total_unrealized_pnl)
+    """
+    cash = state.get("cash", 0.0)
+    positions = state.get("open_positions", [])
+    
+    current_positions_value = 0.0
+    total_unrealized_pnl = 0.0
+    
+    for pos in positions:
+        symbol = pos['symbol']
+        entry_price = pos['entry_price']
+        qty = pos['qty']
+        margin = pos['margin']
+        
+        current_price = live_prices.get(symbol, entry_price)
+        current_value = qty * current_price
+        pnl_usd = current_value - margin
+        
+        current_positions_value += current_value
+        total_unrealized_pnl += pnl_usd
+        
+    live_total_equity = cash + current_positions_value
+    return live_total_equity, total_unrealized_pnl
+
+def build_history_page(df: pd.DataFrame, page: int = 0, page_size: int = 5):
+    """生成 /history 的分頁訊息文字與按鈕矩陣"""
+    total_trades = len(df)
+    total_pages = (total_trades + page_size - 1) // page_size
+    page = max(0, min(page, total_pages - 1))
+
+    # 按時間倒序排列（最新的在最上面）
+    df_reversed = df.iloc[::-1].reset_index(drop=True)
+    start_idx = page * page_size
+    end_idx = start_idx + page_size
+    page_df = df_reversed.iloc[start_idx:end_idx]
+
+    msg = f"📜 *[歷史平倉紀錄 (第 {page + 1}/{total_pages} 頁)]*\n-----------------------------------\n"
+    for _, row in page_df.iterrows():
+        pnl_emoji = "🟢" if row['pnl_usd'] >= 0 else "🔴"
+        msg += (
+            f"{pnl_emoji} *{row['symbol']}* | PnL: `${row['pnl_usd']:+.2f}` (`{row['pnl_pct']*100:+.2f}%`)\n"
+            f"  └ 進: `${row['entry_price']:.4f}` ➔ 出: `${row['exit_price']:.4f}`\n"
+        )
+
+    buttons = []
+    if page > 0:
+        buttons.append(InlineKeyboardButton("⬅️ 上一頁", callback_data=f"hist_page_{page - 1}"))
+    if page < total_pages - 1:
+        buttons.append(InlineKeyboardButton("下一頁 ➡️", callback_data=f"hist_page_{page + 1}"))
+
+    reply_markup = InlineKeyboardMarkup([buttons]) if buttons else None
+    return msg, reply_markup
+
 # ----------------------------------------------------
 # 指令處理邏輯
 # ----------------------------------------------------
@@ -44,9 +100,9 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
         "🤖 *Quant Trading Bot 已連線*\n\n"
         "可用指令如下：\n"
-        "• /status - 檢視帳戶總覽\n"
+        "• /status - 檢視帳戶總覽 (實時現價計算)\n"
         "• /positions - 檢視持倉與即時損益\n"
-        "• /history - 查看歷史平倉紀錄\n"
+        "• /history - 查看歷史平倉紀錄 (支援分頁)\n"
         "• /report - 生成資產淨值走勢圖\n"
         "• /diag - 執行模型診斷並生成 Diagnostic 圖表\n"
         "• /perf - 計算策略勝率與期望值\n"
@@ -63,18 +119,22 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         with open(STATE_FILE, "r", encoding="utf-8") as f:
             state = json.load(f)
 
+        live_prices = get_binance_prices()
+        live_equity, unrealized_pnl = calculate_live_equity(state, live_prices)
+
         pos_count = len(state.get("open_positions", []))
         init_bal = state.get("initial_balance", 200.0)
-        total_eq = state.get("total_equity", init_bal)
-        ret_pct = ((total_eq - init_bal) / init_bal) * 100
+        ret_pct = ((live_equity - init_bal) / init_bal) * 100
+        pnl_emoji = "🟢" if unrealized_pnl >= 0 else "🔴"
 
         msg = (
-            f"📊 *[帳戶資產總覽]*\n"
+            f"📊 *[帳戶資產總覽 (實時更新)]*\n"
             f"-----------------------------------\n"
             f"• *初始資金*: `${init_bal:.2f} USD`\n"
-            f"• *總資產 (Equity)*: `${total_eq:.2f} USD`\n"
+            f"• *實時總資產 (Equity)*: `${live_equity:.2f} USD`\n"
             f"• *可用現金 (Cash)*: `${state.get('cash', 0.0):.2f} USD`\n"
-            f"• *累計報酬率*: `{ret_pct:+.2f}%`\n"
+            f"• *浮動未實現損益*: {pnl_emoji} `${unrealized_pnl:+.2f} USD`\n"
+            f"• *實時累計報酬率*: `{ret_pct:+.2f}%`\n"
             f"• *當前持倉數*: `{pos_count}` 筆\n"
         )
         await update.message.reply_text(msg, parse_mode="Markdown")
@@ -140,20 +200,31 @@ async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ 尚無任何平倉紀錄。")
             return
 
-        recent_df = df.tail(5)
-        msg = "📜 *[最近 5 筆平倉歷史]*\n-----------------------------------\n"
-        for _, row in recent_df.iterrows():
-            pnl_emoji = "🟢" if row['pnl_usd'] >= 0 else "🔴"
-            msg += (
-                f"{pnl_emoji} *{row['symbol']}* | PnL: `${row['pnl_usd']:+.2f}` (`{row['pnl_pct']*100:+.2f}%`)\n"
-                f"  └ 進: `${row['entry_price']:.4f}` ➔ 出: `${row['exit_price']:.4f}`\n"
-            )
-        await update.message.reply_text(msg, parse_mode="Markdown")
+        msg, reply_markup = build_history_page(df, page=0)
+        await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=reply_markup)
     except Exception as e:
         await update.message.reply_text(f"❌ 讀取歷史數據失敗: {e}")
 
+async def history_page_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """處理 /history 下方按鈕點擊事件 (Inline Keyboard Callback)"""
+    query = update.callback_query
+    await query.answer()
+
+    if not os.path.exists(TRADES_FILE):
+        return
+
+    try:
+        target_page = int(query.data.split("_")[-1])
+        df = pd.read_csv(TRADES_FILE)
+        if df.empty:
+            return
+
+        msg, reply_markup = build_history_page(df, page=target_page)
+        await query.edit_message_text(msg, parse_mode="Markdown", reply_markup=reply_markup)
+    except Exception as e:
+        logger.error(f"切換分頁失敗: {e}")
+
 async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """讀取 paper_equity_daily.csv 並繪製走勢圖"""
     if not os.path.exists(EQUITY_FILE):
         await update.message.reply_text("❌ 找不到資產歷史紀錄。")
         return
@@ -185,14 +256,11 @@ async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ 繪製圖表失敗: {e}")
 
 async def diag_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """執行 scripts.analyst_log 生成並發送 diagnostic.png"""
     status_msg = await update.message.reply_text("🔬 正在執行模型診斷分析腳本 (scripts.analyst_log)...")
     
     try:
-        # 動態取得當前運行的 Python 解譯器路徑 (自動適應 Windows/Linux/Virtualenv)
         python_executable = sys.executable
 
-        # 非同步執行外部 Python 模組
         process = await asyncio.create_subprocess_exec(
             python_executable, '-m', 'scripts.analyst_log',
             stdout=asyncio.subprocess.PIPE,
@@ -209,7 +277,6 @@ async def diag_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await status_msg.edit_text("❌ 腳本執行完畢，但未找到 `logs/diagnostic.png` 圖表檔。")
             return
 
-        # 刪除提示文字，並發送產出的診斷圖表
         await status_msg.delete()
         with open(DIAGNOSTIC_IMG, "rb") as photo:
             await update.message.reply_photo(
@@ -222,7 +289,6 @@ async def diag_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ 執行診斷失敗: {e}")
 
 async def perf_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """計算統計數據：勝率、總交易次數、平均盈虧"""
     if not os.path.exists(TRADES_FILE):
         await update.message.reply_text("❌ 尚無足夠平倉數據。")
         return
@@ -255,11 +321,10 @@ async def perf_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # 設定快捷選單與啟動
 # ----------------------------------------------------
 async def post_init(application: Application):
-    """讓 Telegram 輸入框出現自動補全選單"""
     commands = [
-        BotCommand("status", "檢視帳戶資產總覽"),
+        BotCommand("status", "檢視帳戶資產總覽 (實時價格)"),
         BotCommand("positions", "檢視持倉與即時損益"),
-        BotCommand("history", "查看歷史平倉紀錄"),
+        BotCommand("history", "查看歷史平倉紀錄 (按鈕分頁)"),
         BotCommand("report", "生成資產淨值走勢圖"),
         BotCommand("diag", "生成 Diagnostic 分析診斷圖"),
         BotCommand("perf", "計算策略勝率與期望值"),
@@ -283,8 +348,12 @@ def main():
     app.add_handler(CommandHandler("diag", diag_command))
     app.add_handler(CommandHandler("perf", perf_command))
 
+    # 註冊歷史紀錄分頁按鈕的回調處理器
+    app.add_handler(CallbackQueryHandler(history_page_callback, pattern=r"^hist_page_"))
+
     logger.info("🤖 Telegram Bot 指令監聽器啟動中 (Long Polling)...")
     app.run_polling()
 
 if __name__ == "__main__":
+    print(TELEGRAM_BOT_TOKEN)
     main()
