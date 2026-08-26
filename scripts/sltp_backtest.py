@@ -32,7 +32,7 @@ class HighFreqSLTPBacktester:
         position_pct: float = 0.10, 
         fee_rate: float = 0.0008, 
         holding_hours: int = 12,
-        logs_dir: str = "local-logs"
+        logs_dir: str = "logs"
     ):
         """
         :param initial_balance: 初始本金 (預設 $200 USD)
@@ -302,7 +302,7 @@ class HighFreqSLTPBacktester:
 
 
 async def main():
-    csv_file = "local-logs/inference_history.csv" 
+    csv_file = "logs/inference_history.csv" 
     
     if not os.path.exists(csv_file):
         logger.error(f"❌ 找不到訊號檔案: {csv_file}")
@@ -320,17 +320,17 @@ async def main():
         position_pct=0.10,
         fee_rate=0.0008,
         holding_hours=12,
-        logs_dir="local-logs"
+        logs_dir="logs"
     )
     report_df = await backtester.run_grid_backtest(signals_df, tp_grid, sl_grid)
 
     print("\n" + "=" * 85)
-    print("🏆 SL/TP 網格回測排行榜 (已生成診斷圖表 local-logs/sltp_diagnostic_report.png):")
+    print("🏆 SL/TP 網格回測排行榜 (已生成診斷圖表 logs/sltp_diagnostic_report.png):")
     print("=" * 85)
     print(report_df.to_string(index=False))
     print("=" * 85)
 
-    output_path = "local-logs/sltp_grid_report.csv"
+    output_path = "logs/sltp_grid_report.csv"
     report_df.to_csv(output_path, index=False)
     logger.info(f"📊 完整回測報告已儲存至: {output_path}")
 

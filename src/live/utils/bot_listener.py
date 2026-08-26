@@ -337,7 +337,7 @@ async def sltp_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await status_msg.edit_text(f"❌ SL/TP 回測腳本執行失敗:\n`{stderr.decode()[:200]}`", parse_mode="Markdown")
             return
 
-        report_img = "local-logs/sltp_diagnostic_report.png"
+        report_img = "logs/sltp_diagnostic_report.png"
         if not os.path.exists(report_img):
             await status_msg.edit_text("❌ 腳本執行完畢，但未找到 `local-logs/sltp_diagnostic_report.png` 圖表檔。")
             return
