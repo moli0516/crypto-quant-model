@@ -9,9 +9,10 @@ class BinanceOHLCVCleaner(BaseCleaner):
     針對幣安 OHLCV 歷史資料的具體清洗器。
     """
 
-    def __init__(self, fill_method: str = "ffill") -> None:
+    def __init__(self, fill_method: str = "ffill", freq: str = None) -> None:
         super().__init__()
         self.fill_method = fill_method
+        self.freq = freq
 
     def transform(self, df: pd.DataFrame) -> pd.DataFrame:
         # 建立副本，避免修改到原始 DataFrame
@@ -34,11 +35,15 @@ class BinanceOHLCVCleaner(BaseCleaner):
             logger.warning(f"⚠️ 發現 {invalid_price_mask.sum()} 筆價格小於或等於 0 的異常數據，將予以過濾。")
             cleaned = cleaned[~invalid_price_mask]
 
-        # 4. 確保時間序列連續性 (針對 1h 等固定頻率進行對齊與空缺填補)
-        # 偵測最常見的時間間隔
-        inferred_freq = pd.infer_freq(cleaned.index[:100])
-        if inferred_freq:
-            cleaned = cleaned.asfreq(inferred_freq)
+        # 🛡️ 4. 確保時間序列連續性 (優先使用指定的 freq，若無則自動推斷)
+        target_freq = self.freq
+        if not target_freq and len(cleaned) >= 3:
+            target_freq = pd.infer_freq(cleaned.index[:100])
+
+        if target_freq:
+            # 建立起止時間點完整的均勻時間軸，防止被開頭異常間隔誤導
+            full_idx = pd.date_range(start=cleaned.index.min(), end=cleaned.index.max(), freq=target_freq)
+            cleaned = cleaned.reindex(full_idx)
             
             # 針對缺失的時間點進行填補
             missing_count = cleaned["close"].isna().sum()

@@ -35,6 +35,12 @@ env/
 .vscode/
 *.swp
 *.swo
+.github/
+docs/
+Dockerfile
+LICENSE
+pyproject.toml
+
 
 # Project specific
 data/

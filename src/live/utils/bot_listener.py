@@ -316,6 +316,42 @@ async def perf_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(msg, parse_mode="Markdown")
     except Exception as e:
         await update.message.reply_text(f"❌ 計算績效失敗: {e}")
+        
+async def sltp_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """執行 1m 高頻 K 線 SL/TP 網格碰撞回測，並回傳診斷圖表 (sltp_diagnostic_report.png)"""
+    status_msg = await update.message.reply_text("⚡ 正在執行 1m 高頻 K 線 SL/TP 網格碰撞回測與診斷分析 (scripts.sltp_backtest)...")
+    
+    try:
+        python_executable = sys.executable
+
+        # 非同步子進程執行 scripts.sltp_backtest
+        process = await asyncio.create_subprocess_exec(
+            python_executable, '-m', 'scripts.sltp_backtest',
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await process.communicate()
+
+        if process.returncode != 0:
+            logger.error(f"SLTP Backtest 執行錯誤: {stderr.decode()}")
+            await status_msg.edit_text(f"❌ SL/TP 回測腳本執行失敗:\n`{stderr.decode()[:200]}`", parse_mode="Markdown")
+            return
+
+        report_img = "local-logs/sltp_diagnostic_report.png"
+        if not os.path.exists(report_img):
+            await status_msg.edit_text("❌ 腳本執行完畢，但未找到 `local-logs/sltp_diagnostic_report.png` 圖表檔。")
+            return
+
+        await status_msg.delete()
+        with open(report_img, "rb") as photo:
+            await update.message.reply_photo(
+                photo=photo,
+                caption="🏆 *[SL/TP 網格碰撞回測診斷報告 (Heatmap & Equity)]*",
+                parse_mode="Markdown"
+            )
+
+    except Exception as e:
+        await update.message.reply_text(f"❌ 執行 SL/TP 回測失敗: {e}")
 
 # ----------------------------------------------------
 # 設定快捷選單與啟動
@@ -329,6 +365,7 @@ async def post_init(application: Application):
         BotCommand("diag", "生成 Diagnostic 分析診斷圖"),
         BotCommand("perf", "計算策略勝率與期望值"),
         BotCommand("help", "顯示指令說明"),
+        BotCommand("sltp", "執行 1m K 線 SL/TP 網格碰撞回測"),
     ]
     await application.bot.set_my_commands(commands)
 
@@ -347,6 +384,7 @@ def main():
     app.add_handler(CommandHandler("report", report_command))
     app.add_handler(CommandHandler("diag", diag_command))
     app.add_handler(CommandHandler("perf", perf_command))
+    app.add_handler(CommandHandler("sltp", sltp_command))
 
     # 註冊歷史紀錄分頁按鈕的回調處理器
     app.add_handler(CallbackQueryHandler(history_page_callback, pattern=r"^hist_page_"))
