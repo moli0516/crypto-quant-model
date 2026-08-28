@@ -1,3 +1,10 @@
-"""crypto-quant-model 核心套件"""
+"""模型訓練與推論模組"""
+from src.models.wrappers.xgb_wrapper import XGBClassifierWrapper
+from src.models.wrappers.lgbm_wrapper import LGBMClassifierWrapper
+from src.models.wrappers.catboost_wrapper import CatBoostClassifierWrapper
 
-__version__ = "0.1.0"
+__all__ = [
+    "XGBClassifierWrapper",
+    "LGBMClassifierWrapper",
+    "CatBoostClassifierWrapper"
+]

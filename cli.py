@@ -135,34 +135,47 @@ def run_walk_forward(args: argparse.Namespace) -> None:
 
 
 def run_backtest_cli(args: argparse.Namespace) -> None:
-    """執行策略回測與資金曲線模擬"""
+    """執行策略回測與資金曲線模擬 (支援高速快取)"""
     from src.models.data_loader import CryptoDataLoader
     from src.models.evaluation.walk_forward import WalkForwardEvaluator
     from src.models.evaluation.backtest_engine import SimpleStrategyBacktester
 
     print("📈 正在執行 Walk-Forward 預測並進行策略回測...")
     
-    loader = CryptoDataLoader()
-    dataset, feature_cols = loader.load_dataset(horizon=args.horizon, threshold=args.threshold)
+    # 💾 檢查有無先前的 Walk-Forward 預測快取檔
+    cache_dir = Path("local-logs")
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_file = cache_dir / f"wf_preds_cache_{args.model_name}_h{args.horizon}.parquet"
 
-    evaluator = WalkForwardEvaluator(
-        feature_cols=feature_cols,
-        model_name=args.model_name,
-        min_train_days=args.min_train_days,
-        step_days=args.step_days,
-        horizon=args.horizon,
-        threshold=args.threshold
-    )
+    if cache_file.exists():
+        print(f"⚡ 偵測到快取預測檔 ({cache_file.name})，秒級載入預測結果...")
+        preds = pd.read_parquet(cache_file)
+    else:
+        loader = CryptoDataLoader()
+        dataset, feature_cols = loader.load_dataset(horizon=args.horizon, threshold=args.threshold)
 
-    # 1. 取得 WF 預測結果
-    wf_result = evaluator.evaluate(dataset)
-    preds = wf_result["predictions"]
+        evaluator = WalkForwardEvaluator(
+            feature_cols=feature_cols,
+            model_name=args.model_name,
+            min_train_days=args.min_train_days,
+            step_days=args.step_days,
+            horizon=args.horizon,
+            threshold=args.threshold
+        )
+
+        # 1. 取得 WF 預測結果並寫入快取
+        wf_result = evaluator.evaluate(dataset)
+        preds = wf_result["predictions"]
+        
+        if not preds.empty:
+            preds.to_parquet(cache_file)
+            print(f"💾 預測結果已快取至: {cache_file}")
 
     if preds.empty:
         print("❌ 錯誤: WF 預測結果為空，無法回測。")
         return
 
-    # 2. 執行回測
+    # 2. 執行超高速 Numba + Joblib 回測
     backtester = SimpleStrategyBacktester(
         prob_threshold=args.prob_threshold,
         fee_rate=args.fee_rate,
@@ -183,6 +196,48 @@ def run_batch_feature_cli(args: argparse.Namespace) -> None:
     """執行多幣種批次特徵工程與 Parquet 輸出"""
     from src.features.batch_feature_pipeline import run_batch_feature_engineering
     run_batch_feature_engineering(input_dir=args.input_dir, output_dir=args.output_dir)
+    
+# 在 cli.py 中新增此處理函式
+def run_ensemble_backtest_cli(args: argparse.Namespace) -> None:
+    """執行雙模型 (XGBoost + LightGBM) 集成策略回測"""
+    from src.models.data_loader import CryptoDataLoader
+    from src.models.evaluation.ensemble_evaluator import EnsembleWalkForwardEvaluator
+    from src.models.evaluation.backtest_engine import SimpleStrategyBacktester
+
+    print("📈 啟動雙模型集成 (Ensemble: XGB + LGB) Walk-Forward 與策略回測...")
+    
+    loader = CryptoDataLoader()
+    dataset, feature_cols = loader.load_dataset(horizon=args.horizon, threshold=args.threshold)
+
+    # 1. 執行雙模型評估與融合
+    ensemble_eval = EnsembleWalkForwardEvaluator(
+        feature_cols=feature_cols,
+        model_a="xgb_classifier",
+        model_b="lgb_classifier",
+        weights=[0.5, 0.5],
+        min_train_days=args.min_train_days,
+        step_days=args.step_days,
+        horizon=args.horizon,
+        threshold=args.threshold
+    )
+    blended_preds = ensemble_eval.evaluate_and_blend(dataset)
+
+    # 2. 傳入原有的 SimpleStrategyBacktester 進行高吞吐 Numba 回測
+    backtester = SimpleStrategyBacktester(
+        prob_threshold=args.prob_threshold,
+        fee_rate=args.fee_rate,
+        base_leverage=args.base_leverage
+    )
+    bt_result = backtester.run_backtest(blended_preds, horizon=args.horizon)
+    metrics = bt_result["metrics"]
+
+    print(f"\n✨ 雙模型集成 (XGB+LGB) 回測報告 (扣除 {args.fee_rate*100}% 手續費):")
+    print(f"   • 總進場交易次數: {metrics['total_trades']}")
+    print(f"   • 進場勝率 (Win Rate): {metrics['win_rate']*100:.2f}%")
+    print(f"   • 策略總報酬率 (Strategy Return): {metrics['strategy_total_return']*100:.2f}%")
+    print(f"   • 標的買入持有報酬 (Buy & Hold): {metrics['buy_and_hold_return']*100:.2f}%")
+    print(f"   • 年化夏普比率 (Sharpe Ratio): {metrics['sharpe_ratio']:.2f}")
+    print(f"   • 最大回撤 (Max Drawdown): {metrics['max_drawdown']*100:.2f}%")
 
 def main():
     parser = argparse.ArgumentParser(
@@ -247,6 +302,16 @@ def main():
     batch_feat_parser = subparsers.add_parser("batch-feature", help="批量對所有清洗後的幣種執行特徵工程並輸出為 Parquet")
     batch_feat_parser.add_argument("--input-dir", type=str, default="data/interim", help="輸入的中繼資料夾")
     batch_feat_parser.add_argument("--output-dir", type=str, default="data/processed", help="特徵矩陣輸出的 Parquet 資料夾")
+    
+    # 6-1. Ensemble Backtest 命令
+    ens_parser = subparsers.add_parser("ensemble-backtest", help="執行雙模型 (XGB+LGB) 融合策略回測")
+    ens_parser.add_argument("--min-train-days", type=int, default=180)
+    ens_parser.add_argument("--step-days", type=int, default=30)
+    ens_parser.add_argument("--horizon", type=int, default=12)
+    ens_parser.add_argument("--threshold", type=float, default=0.0)
+    ens_parser.add_argument("--prob-threshold", type=float, default=0.53)
+    ens_parser.add_argument("--fee-rate", type=float, default=0.00075)
+    ens_parser.add_argument("--base-leverage", type=float, default=1.0)
 
     # 7. Run 命令
     subparsers.add_parser("run", help="執行交易策略")
@@ -273,6 +338,8 @@ def main():
         run_backtest_cli(args)
     elif args.command == "batch-feature":
         run_batch_feature_cli(args)
+    elif args.command == "ensemble-backtest":
+        run_ensemble_backtest_cli(args)
     else:
         print(f"[CLI] 執行命令: {args.command}")
 

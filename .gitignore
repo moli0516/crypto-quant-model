@@ -46,6 +46,8 @@ logs/
 .mypy_cache/
 logs_test/
 /models/
+catboost_info/
+cmd.txt
 !/src/models/
 .coverage
 code_packer.py
