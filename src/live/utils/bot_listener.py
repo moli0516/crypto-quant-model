@@ -5,8 +5,10 @@ import urllib.request
 import asyncio
 import pandas as pd
 import matplotlib
-matplotlib.use('Agg')  # 無 GUI 環境（如 EC2）繪圖必備
+matplotlib.use('Agg')  # 無 GUI 環境 (如 EC2) 繪圖必備
 import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+from matplotlib.ticker import MaxNLocator
 from telegram import Update, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from dotenv import load_dotenv
@@ -22,6 +24,28 @@ STATE_FILE = "logs/paper_account_state.json"
 TRADES_FILE = "logs/paper_trades.csv"
 EQUITY_FILE = "logs/paper_equity_daily.csv"
 DIAGNOSTIC_IMG = "logs/diagnostic_report.png"
+REPORT_IMG = "logs/equity_chart.png"
+
+# =========================================================================
+# 全局 Institutional Dark Theme 配置 (暗黑專業風格)
+# =========================================================================
+plt.style.use("dark_background")
+PLT_STYLE_CONFIG = {
+    "font.sans-serif": ["DejaVu Sans", "Arial", "Helvetica"],
+    "axes.edgecolor": "#2C303E",
+    "axes.linewidth": 1.2,
+    "grid.color": "#2C303E",
+    "grid.linestyle": "--",
+    "grid.alpha": 0.5,
+    "figure.facecolor": "#12141D",
+    "axes.facecolor": "#1A1D29",
+    "text.color": "#E0E6ED",
+    "axes.labelcolor": "#A0AEC0",
+    "xtick.color": "#A0AEC0",
+    "ytick.color": "#A0AEC0",
+}
+plt.rcParams.update(PLT_STYLE_CONFIG)
+
 
 # ----------------------------------------------------
 # 輔助函式
@@ -93,6 +117,140 @@ def build_history_page(df: pd.DataFrame, page: int = 0, page_size: int = 5):
     reply_markup = InlineKeyboardMarkup([buttons]) if buttons else None
     return msg, reply_markup
 
+def generate_smooth_equity_chart(initial_balance: float = 200.0) -> str:
+    """
+    [核心優化]: 繪製機構級平滑資產淨值走勢圖 (Equity Curve)
+    優先讀取 paper_trades.csv (已實現損益)，若不足則自動降級讀取 paper_equity_daily.csv，
+    全面帶入暗黑主題、漸層填滿與防疊標籤。
+    """
+    df_plot = pd.DataFrame()
+
+    # 優先使用平倉紀錄計算真實階梯式 Equity Curve
+    if os.path.exists(TRADES_FILE):
+        try:
+            df_trades = pd.read_csv(TRADES_FILE)
+            if not df_trades.empty and 'pnl_usd' in df_trades.columns:
+                time_col = 'close_time' if 'close_time' in df_trades.columns else 'timestamp'
+                df_trades['dt'] = pd.to_datetime(df_trades[time_col])
+                df_trades = df_trades.sort_values('dt').reset_index(drop=True)
+                
+                df_trades['cum_pnl'] = df_trades['pnl_usd'].cumsum()
+                df_trades['equity'] = initial_balance + df_trades['cum_pnl']
+                
+                start_dt = df_trades['dt'].iloc[0] - pd.Timedelta(hours=1)
+                df_plot = pd.concat([
+                    pd.DataFrame([{'dt': start_dt, 'equity': initial_balance}]),
+                    df_trades[['dt', 'equity']]
+                ], ignore_index=True)
+        except Exception as e:
+            logger.error(f"解析 paper_trades.csv 失敗: {e}")
+
+    # Fallback: 若 trades 為空則讀取 equity log
+    if df_plot.empty and os.path.exists(EQUITY_FILE):
+        try:
+            df_eq = pd.read_csv(EQUITY_FILE)
+            if len(df_eq) >= 2:
+                df_eq['dt'] = pd.to_datetime(df_eq['timestamp'])
+                df_eq = df_eq.sort_values('dt').reset_index(drop=True)
+                df_eq['equity'] = df_eq['total_equity']
+                df_plot = df_eq[['dt', 'equity']]
+        except Exception as e:
+            logger.error(f"解析 paper_equity_daily.csv 失敗: {e}")
+
+    if len(df_plot) < 2:
+        return ""
+
+    # 開始繪圖
+    fig, ax = plt.subplots(figsize=(10, 5), dpi=300)
+
+    # 1. 基準線 ($200)
+    ax.axhline(
+        y=initial_balance, 
+        color="#E53E3E", 
+        linestyle="--", 
+        linewidth=1.2, 
+        alpha=0.7, 
+        label=f"Initial Capital (${initial_balance:.2f})"
+    )
+
+    # 2. Equity 折線與綠/紅漸層
+    ax.plot(
+        df_plot["dt"], 
+        df_plot["equity"], 
+        color="#3182CE", 
+        linewidth=2.2, 
+        label="Account Equity ($)", 
+        zorder=3
+    )
+    
+    ax.fill_between(
+        df_plot["dt"], 
+        df_plot["equity"], 
+        initial_balance, 
+        where=(df_plot["equity"] >= initial_balance),
+        interpolate=True, 
+        color="#38A169", 
+        alpha=0.18, 
+        zorder=2
+    )
+    ax.fill_between(
+        df_plot["dt"], 
+        df_plot["equity"], 
+        initial_balance, 
+        where=(df_plot["equity"] < initial_balance),
+        interpolate=True, 
+        color="#E53E3E", 
+        alpha=0.18, 
+        zorder=2
+    )
+
+    # 3. 數據標記點
+    ax.scatter(
+        df_plot["dt"].iloc[1:], 
+        df_plot["equity"].iloc[1:], 
+        color="#63B3ED", 
+        s=25, 
+        edgecolor="#1A1D29", 
+        linewidth=0.8, 
+        zorder=4
+    )
+
+    # 4. 當前資產 Annotation 標註
+    latest_eq = df_plot["equity"].iloc[-1]
+    ax.annotate(
+        f" Current: ${latest_eq:.2f}",
+        xy=(df_plot["dt"].iloc[-1], latest_eq),
+        xytext=(8, 0),
+        textcoords="offset points",
+        color="#63B3ED",
+        weight="bold",
+        fontsize=9,
+        va="center"
+    )
+
+    # 5. 防禦 X/Y 軸標籤重疊與刻度範圍
+    ax.xaxis.set_major_locator(MaxNLocator(nbins=6))
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%m-%d %H:%M"))
+    fig.autofmt_xdate(rotation=20, ha="right")
+
+    eq_min, eq_max = df_plot["equity"].min(), df_plot["equity"].max()
+    margin = max((eq_max - eq_min) * 0.15, 2.0)
+    ax.set_ylim(eq_min - margin, eq_max + margin)
+
+    ax.set_title("Paper Account Equity Curve (Realized Progress)", fontsize=13, pad=12, weight="bold", color="#F7FAFC")
+    ax.set_xlabel("Closed Timestamp", fontsize=9, labelpad=8)
+    ax.set_ylabel("Total Equity ($)", fontsize=9, labelpad=8)
+    ax.grid(True)
+    ax.legend(loc="upper left", frameon=True, facecolor="#1A1D29", edgecolor="#2C303E")
+
+    os.makedirs(os.path.dirname(REPORT_IMG), exist_ok=True)
+    plt.tight_layout()
+    plt.savefig(REPORT_IMG, dpi=300, facecolor=fig.get_facecolor(), edgecolor="none")
+    plt.close()
+
+    return REPORT_IMG
+
+
 # ----------------------------------------------------
 # 指令處理邏輯
 # ----------------------------------------------------
@@ -103,9 +261,10 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /status - 檢視帳戶總覽 (實時現價計算)\n"
         "• /positions - 檢視持倉與即時損益\n"
         "• /history - 查看歷史平倉紀錄 (支援分頁)\n"
-        "• /report - 生成資產淨值走勢圖\n"
+        "• /report - 生成資產淨值走勢圖 (平滑暗黑版)\n"
         "• /diag - 執行模型診斷並生成 Diagnostic 圖表\n"
         "• /perf - 計算策略勝率與期望值\n"
+        "• /sltp - 執行 1m K 線 SL/TP 網格碰撞回測\n"
         "• /help - 顯示此選單"
     )
     await update.message.reply_text(msg, parse_mode="Markdown")
@@ -225,35 +384,28 @@ async def history_page_callback(update: Update, context: ContextTypes.DEFAULT_TY
         logger.error(f"切換分頁失敗: {e}")
 
 async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not os.path.exists(EQUITY_FILE):
-        await update.message.reply_text("❌ 找不到資產歷史紀錄。")
-        return
+    """[升級]: 呼叫高品質平滑繪圖函式生成資產曲線圖"""
+    status_msg = await update.message.reply_text("📈 正在生成平滑暗黑版資產淨值走勢圖 (Equity Curve)...")
 
     try:
-        df = pd.read_csv(EQUITY_FILE)
-        if len(df) < 2:
-            await update.message.reply_text("⚠️ 數據點不足，尚無法繪製走勢圖。")
+        # 非阻塞呼叫繪圖引擎
+        img_path = await asyncio.to_thread(generate_smooth_equity_chart, 200.0)
+
+        if not img_path or not os.path.exists(img_path):
+            await status_msg.edit_text("⚠️ 數據點不足（需至少 2 筆紀錄），尚無法繪製走勢圖。")
             return
 
-        plt.figure(figsize=(9, 4.5))
-        plt.plot(df['timestamp'], df['total_equity'], marker='o', color='#2b5c8f', linewidth=2)
-        plt.axhline(y=200, color='r', linestyle='--', alpha=0.6, label='Initial Balance ($200)')
-        plt.title("Paper Account Equity Curve", fontsize=12)
-        plt.xlabel("Timestamp", fontsize=9)
-        plt.ylabel("Total Equity ($)", fontsize=9)
-        plt.xticks(rotation=30, ha='right', fontsize=8)
-        plt.grid(True, linestyle=':', alpha=0.6)
-        plt.tight_layout()
-
-        img_path = "logs/equity_chart.png"
-        plt.savefig(img_path, dpi=150)
-        plt.close()
-
+        await status_msg.delete()
         with open(img_path, "rb") as photo:
-            await update.message.reply_photo(photo=photo, caption="📈 *[資產淨值走勢圖 (Equity Curve)]*", parse_mode="Markdown")
+            await update.message.reply_photo(
+                photo=photo, 
+                caption="📈 *[資產淨值走勢圖 (Realized Equity Curve)]*", 
+                parse_mode="Markdown"
+            )
 
     except Exception as e:
-        await update.message.reply_text(f"❌ 繪製圖表失敗: {e}")
+        logger.error(f"繪製 report 圖表失敗: {e}")
+        await status_msg.edit_text(f"❌ 繪製圖表失敗: {e}")
 
 async def diag_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_msg = await update.message.reply_text("🔬 正在執行模型診斷分析腳本 (scripts.analyst_log)...")
@@ -274,7 +426,7 @@ async def diag_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         if not os.path.exists(DIAGNOSTIC_IMG):
-            await status_msg.edit_text("❌ 腳本執行完畢，但未找到 `logs/diagnostic.png` 圖表檔。")
+            await status_msg.edit_text("❌ 腳本執行完畢，但未找到 `logs/diagnostic_report.png` 圖表檔。")
             return
 
         await status_msg.delete()
@@ -324,7 +476,6 @@ async def sltp_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         python_executable = sys.executable
 
-        # 非同步子進程執行 scripts.sltp_backtest
         process = await asyncio.create_subprocess_exec(
             python_executable, '-m', 'scripts.sltp_backtest',
             stdout=asyncio.subprocess.PIPE,
@@ -339,7 +490,7 @@ async def sltp_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         report_img = "logs/sltp_diagnostic_report.png"
         if not os.path.exists(report_img):
-            await status_msg.edit_text("❌ 腳本執行完畢，但未找到 `local-logs/sltp_diagnostic_report.png` 圖表檔。")
+            await status_msg.edit_text("❌ 腳本執行完畢，但未找到 `logs/sltp_diagnostic_report.png` 圖表檔。")
             return
 
         await status_msg.delete()
@@ -361,11 +512,11 @@ async def post_init(application: Application):
         BotCommand("status", "檢視帳戶資產總覽 (實時價格)"),
         BotCommand("positions", "檢視持倉與即時損益"),
         BotCommand("history", "查看歷史平倉紀錄 (按鈕分頁)"),
-        BotCommand("report", "生成資產淨值走勢圖"),
+        BotCommand("report", "生成資產淨值走勢圖 (暗黑平滑版)"),
         BotCommand("diag", "生成 Diagnostic 分析診斷圖"),
         BotCommand("perf", "計算策略勝率與期望值"),
-        BotCommand("help", "顯示指令說明"),
         BotCommand("sltp", "執行 1m K 線 SL/TP 網格碰撞回測"),
+        BotCommand("help", "顯示指令說明"),
     ]
     await application.bot.set_my_commands(commands)
 
@@ -386,12 +537,10 @@ def main():
     app.add_handler(CommandHandler("perf", perf_command))
     app.add_handler(CommandHandler("sltp", sltp_command))
 
-    # 註冊歷史紀錄分頁按鈕的回調處理器
     app.add_handler(CallbackQueryHandler(history_page_callback, pattern=r"^hist_page_"))
 
     logger.info("🤖 Telegram Bot 指令監聽器啟動中 (Long Polling)...")
     app.run_polling()
 
 if __name__ == "__main__":
-    print(TELEGRAM_BOT_TOKEN)
     main()
