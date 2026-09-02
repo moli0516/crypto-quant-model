@@ -1,3 +1,11 @@
+"""
+scripts/analyst_log.py
+==============================================================================
+Institutional-Grade 2x2 Dark Theme Model Diagnostic Report Generator
+完全動態對接 src.config，支援動態 Top-K 機率追蹤與無障礙數據降級顯示。
+==============================================================================
+"""
+
 import os
 import sys
 import pandas as pd
@@ -9,13 +17,19 @@ import matplotlib.dates as mdates
 from matplotlib.ticker import MaxNLocator, PercentFormatter
 import seaborn as sns
 
+# 🎯 統一從集中式配置層讀取設定
+from src.config import (
+    INFERENCE_LOG_FILE,
+    TRADES_LOG_FILE,
+    DIAGNOSTIC_IMG_FILE,
+    PROB_THRESHOLD
+)
+
 # =========================================================================
-# 全局 Institutional Dark Theme 配置 (修正 KeyError 問題)
+# 全局 Institutional Dark Theme 配置
 # =========================================================================
-# 1. 先套用暗黑樣式底色
 plt.style.use("dark_background")
 
-# 2. 移除 "style" 鍵，僅保留合法的 rcParams 參數
 PLT_STYLE_CONFIG = {
     "font.sans-serif": ["DejaVu Sans", "Arial", "Helvetica"],
     "axes.edgecolor": "#2C303E",
@@ -34,10 +48,10 @@ plt.rcParams.update(PLT_STYLE_CONFIG)
 
 
 def generate_diagnostic_report(
-    csv_path: str = "logs/inference_history.csv",
-    trades_log_path: str = "logs/paper_trades.csv",
-    output_img: str = "logs/diagnostic_report.png",
-    prob_threshold: float = 0.53
+    csv_path: str = INFERENCE_LOG_FILE,
+    trades_log_path: str = TRADES_LOG_FILE,
+    output_img: str = DIAGNOSTIC_IMG_FILE,
+    prob_threshold: float = PROB_THRESHOLD
 ):
     """
     生成高度模組化、極致平滑且具備實戰決策價值的 2x2 暗黑主題模型診斷報告。
@@ -57,7 +71,8 @@ def generate_diagnostic_report(
         return
 
     # 時間戳記防禦轉型
-    df['dt'] = pd.to_datetime(df['timestamp'])
+    time_col = 'dt' if 'dt' in df.columns else 'timestamp'
+    df['dt'] = pd.to_datetime(df[time_col])
     
     # 防禦性讀取歷史平倉紀錄
     df_trades = pd.DataFrame()
@@ -85,7 +100,7 @@ def generate_diagnostic_report(
         alpha=0.75,
         line_kws={'linewidth': 2, 'color': '#63B3ED'}
     )
-    ax1.axvline(prob_threshold, color='#E53E3E', linestyle='--', linewidth=2, label=f'LONG Threshold ({prob_threshold})')
+    ax1.axvline(prob_threshold, color='#E53E3E', linestyle='--', linewidth=2, label=f'Threshold ({prob_threshold})')
     ax1.set_title('Overall Probability Distribution (pred_proba)', fontsize=12, fontweight='bold', pad=10)
     ax1.set_xlabel('Probability', fontsize=10, labelpad=8)
     ax1.set_ylabel('Frequency', fontsize=10, labelpad=8)
@@ -105,8 +120,12 @@ def generate_diagnostic_report(
     signal_summary['trigger_count'] = symbol_counts
     signal_summary['trigger_count'] = signal_summary['trigger_count'].fillna(0).astype(int)
     
-    # 計算實質勝率
-    pnl_col = 'pnl_usd' if 'pnl_usd' in df_trades.columns else ('pnl_amount' if 'pnl_amount' in df_trades.columns else None)
+    # 計算實質勝率 (防禦相容 pnl_usd, pnl_amount, pnl_pct)
+    pnl_col = None
+    for col in ['pnl_usd', 'pnl_amount', 'pnl_pct']:
+        if not df_trades.empty and col in df_trades.columns:
+            pnl_col = col
+            break
     
     if not df_trades.empty and 'symbol' in df_trades.columns and pnl_col:
         trade_stats = df_trades.groupby('symbol').agg(
@@ -142,19 +161,20 @@ def generate_diagnostic_report(
     ax2.grid(True)
 
     # =========================================================================
-    # 3. 重點標的機率走勢圖 (Top Symbols Probability Trend)
+    # 3. 動態 Top-3 高信心標的機率走勢圖 (Dynamic Top Symbols Probability Trend)
     # =========================================================================
     ax3 = axes[1, 0]
-    target_symbols = ['BTCUSDT', 'ETHUSDT', 'NEARUSDT']
+    
+    # 🎯 動態選取最新一期或最高平均機率的前 3 個熱門標的，擺脫硬編碼
+    top_avg_symbols = df.groupby('symbol')['pred_proba'].mean().nlargest(3).index.tolist()
     palette = ['#4299E1', '#ED8936', '#48BB78']
     
-    for idx, sym in enumerate(target_symbols):
-        if sym in df['symbol'].unique():
-            sub = df[df['symbol'] == sym].sort_values('dt')
-            ax3.plot(sub['dt'], sub['pred_proba'], marker='o', markersize=3, linewidth=1.5, color=palette[idx % len(palette)], label=sym, alpha=0.85)
+    for idx, sym in enumerate(top_avg_symbols):
+        sub = df[df['symbol'] == sym].sort_values('dt')
+        ax3.plot(sub['dt'], sub['pred_proba'], marker='o', markersize=3, linewidth=1.5, color=palette[idx % len(palette)], label=sym, alpha=0.85)
             
     ax3.axhline(prob_threshold, color='#E53E3E', linestyle='--', linewidth=1.5, label=f'Threshold ({prob_threshold})')
-    ax3.set_title('Top Symbols Probability Trend Over Time', fontsize=12, fontweight='bold', pad=10)
+    ax3.set_title(f'Top Avg Confidence Symbols Probability Trend', fontsize=12, fontweight='bold', pad=10)
     ax3.set_xlabel('Timestamp', fontsize=10, labelpad=8)
     ax3.set_ylabel('Probability', fontsize=10, labelpad=8)
     ax3.legend(loc='upper left', frameon=True, facecolor='#1A1D29', edgecolor='#2C303E')
@@ -170,28 +190,31 @@ def generate_diagnostic_report(
     # =========================================================================
     ax4 = axes[1, 1]
     btc_df = df[df['symbol'] == 'BTCUSDT'].sort_values('dt')
+    
     if not btc_df.empty:
         color_price = '#3182CE'
         color_prob = '#DD6B20'
+        price_col = 'close_price' if 'close_price' in btc_df.columns else ('close' if 'close' in btc_df.columns else None)
         
-        ax4.set_xlabel('Timestamp', fontsize=10, labelpad=8)
-        ax4.set_ylabel('BTC Close Price ($)', color=color_price, fontweight='bold', labelpad=8)
-        ax4.plot(btc_df['dt'], btc_df['close_price'], color=color_price, linewidth=1.8, marker='s', markersize=3, label='BTC Price', alpha=0.9)
-        ax4.tick_params(axis='y', labelcolor=color_price)
-        
-        ax4_twin = ax4.twinx()
-        ax4_twin.set_ylabel('Model Probability', color=color_prob, fontweight='bold', labelpad=8)
-        ax4_twin.plot(btc_df['dt'], btc_df['pred_proba'], color=color_prob, linewidth=1.2, marker='o', markersize=3, linestyle='--', label='Probability', alpha=0.8)
-        ax4_twin.tick_params(axis='y', labelcolor=color_prob)
-        ax4_twin.axhline(prob_threshold, color='#E53E3E', linestyle=':', label=f'Threshold ({prob_threshold})')
-        
-        ax4.set_title('BTCUSDT: Price vs Model Confidence Correlation', fontsize=12, fontweight='bold', pad=10)
-        
-        # 防禦 X 軸標籤重疊
-        ax4.xaxis.set_major_locator(MaxNLocator(nbins=6))
-        ax4.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %H:%M'))
-        plt.setp(ax4.get_xticklabels(), rotation=20, ha='right')
-        ax4.grid(True)
+        if price_col:
+            ax4.set_xlabel('Timestamp', fontsize=10, labelpad=8)
+            ax4.set_ylabel('BTC Close Price ($)', color=color_price, fontweight='bold', labelpad=8)
+            ax4.plot(btc_df['dt'], btc_df[price_col], color=color_price, linewidth=1.8, marker='s', markersize=3, label='BTC Price', alpha=0.9)
+            ax4.tick_params(axis='y', labelcolor=color_price)
+            
+            ax4_twin = ax4.twinx()
+            ax4_twin.set_ylabel('Model Probability', color=color_prob, fontweight='bold', labelpad=8)
+            ax4_twin.plot(btc_df['dt'], btc_df['pred_proba'], color=color_prob, linewidth=1.2, marker='o', markersize=3, linestyle='--', label='Probability', alpha=0.8)
+            ax4_twin.tick_params(axis='y', labelcolor=color_prob)
+            ax4_twin.axhline(prob_threshold, color='#E53E3E', linestyle=':', label=f'Threshold ({prob_threshold})')
+            
+            ax4.set_title('BTCUSDT: Price vs Model Confidence Correlation', fontsize=12, fontweight='bold', pad=10)
+            
+            # 防禦 X 軸標籤重疊
+            ax4.xaxis.set_major_locator(MaxNLocator(nbins=6))
+            ax4.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %H:%M'))
+            plt.setp(ax4.get_xticklabels(), rotation=20, ha='right')
+            ax4.grid(True)
 
     # 確保輸出目錄存在並匯出高解析度圖表
     os.makedirs(os.path.dirname(output_img), exist_ok=True)
