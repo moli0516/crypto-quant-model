@@ -6,6 +6,16 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 from datetime import datetime, timezone
+from src.config import (
+    INFERENCE_LOG_FILE,
+    SLTP_REPORT_IMG_FILE,
+    TRANSACTION_FEE_RATE,
+    INITIAL_CAPITAL,
+    POSITION_SIZE_RATIO,
+    LOGS_DIR,
+    BASELINE_HOLD_HOURS,
+    SLTP_REPORT_LOG_FILE
+)
 
 # 繪圖套件 (無 GUI 環境預設 Agg)
 import matplotlib
@@ -28,11 +38,11 @@ class HighFreqSLTPBacktester:
     """
     def __init__(
         self, 
-        initial_balance: float = 200.0, 
-        position_pct: float = 0.10, 
-        fee_rate: float = 0.0008, 
-        holding_hours: int = 12,
-        logs_dir: str = "logs"
+        initial_balance: float = INITIAL_CAPITAL, 
+        position_pct: float = POSITION_SIZE_RATIO, 
+        fee_rate: float = TRANSACTION_FEE_RATE, 
+        holding_hours: int = BASELINE_HOLD_HOURS,
+        logs_dir: Path = LOGS_DIR
     ):
         """
         :param initial_balance: 初始本金 (預設 $200 USD)
@@ -168,7 +178,7 @@ class HighFreqSLTPBacktester:
         axes[1].legend()
 
         plt.tight_layout()
-        save_path = os.path.join(self.logs_dir, "sltp_diagnostic_report.png")
+        save_path = SLTP_REPORT_IMG_FILE
         plt.savefig(save_path, dpi=150)
         plt.close()
         logger.info(f"🎨 診斷圖表已成功輸出至: {save_path}")
@@ -301,8 +311,8 @@ class HighFreqSLTPBacktester:
         return report_df
 
 
-async def main():
-    csv_file = "logs/inference_history.csv" 
+async def run_sltp_grid_search():
+    csv_file = INFERENCE_LOG_FILE
     
     if not os.path.exists(csv_file):
         logger.error(f"❌ 找不到訊號檔案: {csv_file}")
@@ -315,13 +325,7 @@ async def main():
     sl_grid = [0.01, 0.015, 0.02, 0.025, 0.03, 0.04]  # 1.0% ~ 4.0%
 
     # 傳入 initial_balance=200.0, position_pct=0.10, logs_dir="local-logs"
-    backtester = HighFreqSLTPBacktester(
-        initial_balance=200.0,
-        position_pct=0.10,
-        fee_rate=0.0008,
-        holding_hours=12,
-        logs_dir="logs"
-    )
+    backtester = HighFreqSLTPBacktester()
     report_df = await backtester.run_grid_backtest(signals_df, tp_grid, sl_grid)
 
     print("\n" + "=" * 85)
@@ -330,9 +334,9 @@ async def main():
     print(report_df.to_string(index=False))
     print("=" * 85)
 
-    output_path = "logs/sltp_grid_report.csv"
+    output_path = SLTP_REPORT_LOG_FILE
     report_df.to_csv(output_path, index=False)
     logger.info(f"📊 完整回測報告已儲存至: {output_path}")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(run_sltp_grid_search())

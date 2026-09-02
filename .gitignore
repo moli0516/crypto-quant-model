@@ -55,4 +55,5 @@ test_cache
 packed_code.md
 htmlcov/
 local-logs/
+test_conn.py
 .DS_Store

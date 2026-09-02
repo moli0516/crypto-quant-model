@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """
-crypto-quant-model 統一 CLI 入口
+crypto-quant-model 統一 CLI 控制中心
+==============================================================================
+提供歷史數據收集、特徵工程、模型訓練、 Walk-Forward 驗證、
+1m 高頻 SL/TP 網格尋優與機構級診斷報表生成功能。
+==============================================================================
 """
 
 import argparse
@@ -10,7 +14,22 @@ import sys
 import pandas as pd
 from pathlib import Path
 
+# 🎯 統一從集中式配置層讀取設定
+from src.config import (
+    INFERENCE_LOG_FILE,
+    TRADES_LOG_FILE,
+    SLTP_REPORT_IMG_FILE,
+    DIAGNOSTIC_IMG_FILE,
+    PROB_THRESHOLD,
+    ACTIVE_SYMBOLS,
+    SYMBOL_BLACKLIST,
+    TRANSACTION_FEE_RATE
+)
 
+
+# ==============================================================================
+# 1. 資料收集與清洗命令處理 (Data Pipeline)
+# ==============================================================================
 async def collect_ohlcv(args: argparse.Namespace) -> None:
     """Fetch Binance OHLCV data and write it to stdout or a CSV file."""
     from src.collectors.binance.rest_client import BinanceAsyncRESTClient
@@ -27,7 +46,7 @@ async def collect_ohlcv(args: argparse.Namespace) -> None:
     if args.output:
         os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
         data.to_csv(args.output)
-        print(f"已收集 {len(data)} 筆資料至 {args.output}")
+        print(f"✅ 已收集 {len(data)} 筆資料至 {args.output}")
     else:
         data.to_csv(sys.stdout)
 
@@ -62,6 +81,9 @@ def clean_ohlcv(args: argparse.Namespace) -> None:
     print(f"✨ 清洗完畢！已將 {len(cleaned_df)} 筆乾淨資料儲存至 {output_path}")
 
 
+# ==============================================================================
+# 2. 特徵工程與模型訓練命令處理 (Feature & Modeling)
+# ==============================================================================
 def generate_features(args: argparse.Namespace) -> None:
     """執行特徵工程命令"""
     from src.features.feature_pipeline import FeaturePipeline
@@ -81,6 +103,12 @@ def generate_features(args: argparse.Namespace) -> None:
     os.makedirs(output_path.parent, exist_ok=True)
     feature_df.to_csv(output_path)
     print(f"✨ 特徵工程完畢！已將維度為 {feature_df.shape} 的特徵矩陣儲存至 {output_path}")
+
+
+def run_batch_feature_cli(args: argparse.Namespace) -> None:
+    """執行多幣種批次特徵工程與 Parquet 輸出"""
+    from src.features.batch_feature_pipeline import run_batch_feature_engineering
+    run_batch_feature_engineering(input_dir=args.input_dir, output_dir=args.output_dir)
 
 
 def train_model(args: argparse.Namespace) -> None:
@@ -142,8 +170,7 @@ def run_backtest_cli(args: argparse.Namespace) -> None:
 
     print("📈 正在執行 Walk-Forward 預測並進行策略回測...")
     
-    # 💾 檢查有無先前的 Walk-Forward 預測快取檔
-    cache_dir = Path("local-logs")
+    cache_dir = Path("logs")
     cache_dir.mkdir(parents=True, exist_ok=True)
     cache_file = cache_dir / f"wf_preds_cache_{args.model_name}_h{args.horizon}.parquet"
 
@@ -163,7 +190,6 @@ def run_backtest_cli(args: argparse.Namespace) -> None:
             threshold=args.threshold
         )
 
-        # 1. 取得 WF 預測結果並寫入快取
         wf_result = evaluator.evaluate(dataset)
         preds = wf_result["predictions"]
         
@@ -175,7 +201,6 @@ def run_backtest_cli(args: argparse.Namespace) -> None:
         print("❌ 錯誤: WF 預測結果為空，無法回測。")
         return
 
-    # 2. 執行超高速 Numba + Joblib 回測
     backtester = SimpleStrategyBacktester(
         prob_threshold=args.prob_threshold,
         fee_rate=args.fee_rate,
@@ -192,12 +217,7 @@ def run_backtest_cli(args: argparse.Namespace) -> None:
     print(f"   • 年化夏普比率 (Sharpe Ratio): {metrics['sharpe_ratio']:.2f}")
     print(f"   • 最大回撤 (Max Drawdown): {metrics['max_drawdown']*100:.2f}%")
 
-def run_batch_feature_cli(args: argparse.Namespace) -> None:
-    """執行多幣種批次特徵工程與 Parquet 輸出"""
-    from src.features.batch_feature_pipeline import run_batch_feature_engineering
-    run_batch_feature_engineering(input_dir=args.input_dir, output_dir=args.output_dir)
-    
-# 在 cli.py 中新增此處理函式
+
 def run_ensemble_backtest_cli(args: argparse.Namespace) -> None:
     """執行雙模型 (XGBoost + LightGBM) 集成策略回測"""
     from src.models.data_loader import CryptoDataLoader
@@ -209,7 +229,6 @@ def run_ensemble_backtest_cli(args: argparse.Namespace) -> None:
     loader = CryptoDataLoader()
     dataset, feature_cols = loader.load_dataset(horizon=args.horizon, threshold=args.threshold)
 
-    # 1. 執行雙模型評估與融合
     ensemble_eval = EnsembleWalkForwardEvaluator(
         feature_cols=feature_cols,
         model_a="xgb_classifier",
@@ -222,7 +241,6 @@ def run_ensemble_backtest_cli(args: argparse.Namespace) -> None:
     )
     blended_preds = ensemble_eval.evaluate_and_blend(dataset)
 
-    # 2. 傳入原有的 SimpleStrategyBacktester 進行高吞吐 Numba 回測
     backtester = SimpleStrategyBacktester(
         prob_threshold=args.prob_threshold,
         fee_rate=args.fee_rate,
@@ -239,14 +257,62 @@ def run_ensemble_backtest_cli(args: argparse.Namespace) -> None:
     print(f"   • 年化夏普比率 (Sharpe Ratio): {metrics['sharpe_ratio']:.2f}")
     print(f"   • 最大回撤 (Max Drawdown): {metrics['max_drawdown']*100:.2f}%")
 
+
+# ==============================================================================
+# 3. 🆕 SL/TP 網格尋優與診斷報表命令 (Phase 2 & Phase 3 Core CLI)
+# ==============================================================================
+def run_backtest_sltp_cli(args: argparse.Namespace) -> None:
+    """執行 1m 高頻 K 線 SL/TP 網格碰撞搜尋，產出 Heatmap 與風控甜點區"""
+    try:
+        from scripts.sltp_backtest import run_sltp_grid_search
+    except ImportError:
+        print("❌ [CLI Error] 找不到 scripts.sltp_backtest 模組，請檢查專案結構。")
+        sys.exit(1)
+
+    print("⚡ 啟動 Phase 2: 1m 高頻 K 線 SL/TP 網格尋優與碰撞測試...")
+    asyncio.run(run_sltp_grid_search())
+
+
+def run_diag_cli(args: argparse.Namespace) -> None:
+    """產出 2x2 機構級暗黑診斷報表 (Diagnostic Report)"""
+    try:
+        from scripts.analyst_log import generate_diagnostic_report
+    except ImportError:
+        print("❌ [CLI Error] 找不到 scripts.analyst_log 模組，請檢查專案結構。")
+        sys.exit(1)
+
+    print("🔬 啟動模型診斷分析 (Generating Diagnostic Report)...")
+    generate_diagnostic_report(
+        csv_path=args.input,
+        trades_log_path=args.trades,
+        output_img=args.output,
+        prob_threshold=args.threshold
+    )
+
+
+def show_universe_cli(args: argparse.Namespace) -> None:
+    """展示當前生效標的池 (Active Universe) 與黑名單狀態"""
+    print("=" * 60)
+    print("📊 [Universe Selection & Blacklist Status]")
+    print("=" * 60)
+    print(f"🚫 0% 勝率毒瘤黑名單 (Blacklisted, 共 {len(SYMBOL_BLACKLIST)} 個):")
+    print(f"   {sorted(list(SYMBOL_BLACKLIST))}\n")
+    print(f"🎯 實盤生效標的池 (Active Universe, 共 {len(ACTIVE_SYMBOLS)} 個):")
+    print(f"   {ACTIVE_SYMBOLS}")
+    print("=" * 60)
+
+
+# ==============================================================================
+# 4. CLI 主入口設定 (Main Function & Subparsers)
+# ==============================================================================
 def main():
     parser = argparse.ArgumentParser(
-        description="crypto-quant-model CLI",
+        description="crypto-quant-model 統一 CLI 控制中心",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     subparsers = parser.add_subparsers(dest="command", help="可用命令")
 
-    # 1. Collect 命令 (單一資產)
+    # 1. Collect 命令
     collect_parser = subparsers.add_parser("collect", help="執行單一資產資料收集")
     collect_parser.add_argument("--symbol", type=str, default="BTCUSDT")
     collect_parser.add_argument("--timeframe", type=str, default="1h")
@@ -256,7 +322,7 @@ def main():
     collect_parser.add_argument("--output", type=str, default="data/raw/raw_record.csv", help="輸出的 CSV 檔案路徑")
     collect_parser.add_argument("--api-key", default=os.getenv("BINANCE_API_KEY"))
 
-    # 1-1. 🆕 Batch-Collect 命令 (前 20 大熱門幣種批次收集)
+    # 1-1. Batch-Collect 命令
     batch_parser = subparsers.add_parser("batch-collect", help="非同步批量下載並清洗前 20 大熱門幣種歷史 K 線")
     batch_parser.add_argument("--timeframe", type=str, default="1h", help="K 線時間週期 (預設 1h)")
     batch_parser.add_argument("--limit", type=int, default=15000, help="每個幣種最大抓取筆數 (預設 15000)")
@@ -272,20 +338,24 @@ def main():
     feature_parser.add_argument("--input", type=str, default="data/interim/clean_record.csv", help="輸入的中繼清洗 CSV 檔案路徑")
     feature_parser.add_argument("--output", type=str, default="data/processed/feature_matrix.csv", help="特徵矩陣的輸出 CSV 檔案路徑")
 
+    batch_feat_parser = subparsers.add_parser("batch-feature", help="批量對所有清洗後的幣種執行特徵工程並輸出為 Parquet")
+    batch_feat_parser.add_argument("--input-dir", type=str, default="data/interim", help="輸入的中繼資料夾")
+    batch_feat_parser.add_argument("--output-dir", type=str, default="data/processed", help="特徵矩陣輸出的 Parquet 資料夾")
+
     # 4. Train 命令
     train_parser = subparsers.add_parser("train", help="執行模型訓練")
     train_parser.add_argument("--model-name", type=str, default="xgb_classifier", help="模型註冊名稱")
     train_parser.add_argument("--val-days", type=int, default=30, help="驗證集天數")
-    train_parser.add_argument("--horizon", type=int, default=1, help="預測未來幾小時的標籤")
+    train_parser.add_argument("--horizon", type=int, default=12, help="預測未來幾小時的標籤")
     train_parser.add_argument("--threshold", type=float, default=0.0, help="正報酬判定門檻")
-    train_parser.add_argument("--output", type=str, default="data/models/xgb_model.pkl", help="模型輸出的序列化檔案路徑")
+    train_parser.add_argument("--output", type=str, default="models/xgb_baseline.pkl", help="模型輸出的序列化檔案路徑")
 
     # 5. Walk-Forward Evaluation 命令
     wf_parser = subparsers.add_parser("wf-eval", help="執行 Walk-Forward 滾動交叉驗證")
     wf_parser.add_argument("--model-name", type=str, default="xgb_classifier", help="模型註冊名稱")
     wf_parser.add_argument("--min-train-days", type=int, default=365, help="最小訓練天數")
     wf_parser.add_argument("--step-days", type=int, default=30, help="每折測試步長天數")
-    wf_parser.add_argument("--horizon", type=int, default=1, help="預測未來幾小時的標籤")
+    wf_parser.add_argument("--horizon", type=int, default=12, help="預測未來幾小時的標籤")
     wf_parser.add_argument("--threshold", type=float, default=0.0, help="正報酬判定門檻")
 
     # 6. Backtest 命令
@@ -293,28 +363,36 @@ def main():
     bt_parser.add_argument("--model-name", type=str, default="xgb_classifier", help="模型註冊名稱")
     bt_parser.add_argument("--min-train-days", type=int, default=365, help="最小訓練天數")
     bt_parser.add_argument("--step-days", type=int, default=30, help="每折測試步長天數")
-    bt_parser.add_argument("--horizon", type=int, default=1, help="預測未來幾小時的標籤")
+    bt_parser.add_argument("--horizon", type=int, default=12, help="預測未來幾小時的標籤")
     bt_parser.add_argument("--threshold", type=float, default=0.0, help="正報酬判定門檻")
-    bt_parser.add_argument("--prob-threshold", type=float, default=0.52, help="進場做多機率門檻")
-    bt_parser.add_argument("--fee-rate", type=float, default=0.0005, help="每筆交易手續費率")
-    bt_parser.add_argument("--base-leverage", type=float, default=2.0, help="基礎合約槓桿倍數")
-    
-    batch_feat_parser = subparsers.add_parser("batch-feature", help="批量對所有清洗後的幣種執行特徵工程並輸出為 Parquet")
-    batch_feat_parser.add_argument("--input-dir", type=str, default="data/interim", help="輸入的中繼資料夾")
-    batch_feat_parser.add_argument("--output-dir", type=str, default="data/processed", help="特徵矩陣輸出的 Parquet 資料夾")
-    
+    bt_parser.add_argument("--prob-threshold", type=float, default=PROB_THRESHOLD, help="進場做多機率門檻")
+    bt_parser.add_argument("--fee-rate", type=float, default=TRANSACTION_FEE_RATE, help="每筆交易手續費率")
+    bt_parser.add_argument("--base-leverage", type=float, default=1.0, help="基礎合約槓桿倍數")
+
     # 6-1. Ensemble Backtest 命令
     ens_parser = subparsers.add_parser("ensemble-backtest", help="執行雙模型 (XGB+LGB) 融合策略回測")
     ens_parser.add_argument("--min-train-days", type=int, default=180)
     ens_parser.add_argument("--step-days", type=int, default=30)
     ens_parser.add_argument("--horizon", type=int, default=12)
     ens_parser.add_argument("--threshold", type=float, default=0.0)
-    ens_parser.add_argument("--prob-threshold", type=float, default=0.53)
-    ens_parser.add_argument("--fee-rate", type=float, default=0.00075)
+    ens_parser.add_argument("--prob-threshold", type=float, default=PROB_THRESHOLD)
+    ens_parser.add_argument("--fee-rate", type=float, default=TRANSACTION_FEE_RATE)
     ens_parser.add_argument("--base-leverage", type=float, default=1.0)
 
-    # 7. Run 命令
-    subparsers.add_parser("run", help="執行交易策略")
+    # 7. 🆕 SL/TP 網格尋優命令 (Phase 2 Key Subcommand)
+    sltp_parser = subparsers.add_parser("backtest-sltp", help="執行 1m 高頻 K 線 SL/TP 網格碰撞尋優")
+    sltp_parser.add_argument("--input", type=str, default=INFERENCE_LOG_FILE, help="推論歷史 CSV 檔案路徑")
+    sltp_parser.add_argument("--output", type=str, default=SLTP_REPORT_IMG_FILE, help="熱力圖輸出圖片路徑")
+
+    # 8. 🆕 診斷報表命令
+    diag_parser = subparsers.add_parser("diag", help="生成 2x2 機構級模型診斷分析圖表")
+    diag_parser.add_argument("--input", type=str, default=INFERENCE_LOG_FILE, help="推論歷史 CSV 檔案路徑")
+    diag_parser.add_argument("--trades", type=str, default=TRADES_LOG_FILE, help="平倉紀錄 CSV 檔案路徑")
+    diag_parser.add_argument("--output", type=str, default=DIAGNOSTIC_IMG_FILE, help="診斷圖表輸出路徑")
+    diag_parser.add_argument("--threshold", type=float, default=PROB_THRESHOLD, help="訊號機率門檻")
+
+    # 9. 🆕 查看生效標的池命令
+    subparsers.add_parser("show-universe", help="檢視當前生效標的池 (Active Universe) 與黑名單狀態")
 
     args = parser.parse_args()
 
@@ -322,6 +400,7 @@ def main():
         parser.print_help()
         sys.exit(0)
 
+    # 路由指令執行
     if args.command == "collect":
         asyncio.run(collect_ohlcv(args))
     elif args.command == "batch-collect":
@@ -330,18 +409,24 @@ def main():
         clean_ohlcv(args)
     elif args.command == "feature":
         generate_features(args)
+    elif args.command == "batch-feature":
+        run_batch_feature_cli(args)
     elif args.command == "train":
         train_model(args)
     elif args.command == "wf-eval":
         run_walk_forward(args)
     elif args.command == "backtest":
         run_backtest_cli(args)
-    elif args.command == "batch-feature":
-        run_batch_feature_cli(args)
     elif args.command == "ensemble-backtest":
         run_ensemble_backtest_cli(args)
+    elif args.command == "backtest-sltp":
+        run_backtest_sltp_cli(args)
+    elif args.command == "diag":
+        run_diag_cli(args)
+    elif args.command == "show-universe":
+        show_universe_cli(args)
     else:
-        print(f"[CLI] 執行命令: {args.command}")
+        print(f"[CLI] 未知指令: {args.command}")
 
 
 if __name__ == "__main__":
