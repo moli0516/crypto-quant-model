@@ -1,5 +1,5 @@
 """
-src/live/live_trader_ensemble_spot.py
+src/live/live_trader_ensemble.py
 ==============================================================================
 Ensemble Live Trader for Binance Spot Testnet
 - Ensemble (XGB + LGB) Soft Voting
@@ -36,22 +36,17 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 
-class EnsembleSpotLiveTrader:
+class EnsembleLiveTrader:
     """
     Binance Spot Testnet 實盤版 Ensemble 交易器
+    - 純 Testnet 交易器（本地只保留輕量 OCO 記錄）
     """
 
-    def __init__(
-        self,
-        prob_threshold: float = PROB_THRESHOLD,
-        top_k: int = TOP_K_SIGNALS,
-        dry_run: bool = False,          # True = 只預測不下單
-    ):
+    def __init__(self, prob_threshold: float = PROB_THRESHOLD, top_k: int = TOP_K_SIGNALS):
         self.symbols = ACTIVE_SYMBOLS
         self.prob_threshold = prob_threshold
         self.top_k = top_k
         self.use_top_k = USE_TOP_K_FILTER
-        self.dry_run = dry_run
 
         self.pipeline = LiveDataPipeline(symbols=self.symbols)
 
@@ -61,17 +56,14 @@ class EnsembleSpotLiveTrader:
             weights=ENSEMBLE_WEIGHTS,
         )
 
-        # 只有非 dry_run 才初始化真實交易所
-        self.trader = None
-        if not self.dry_run:
-            self.trader = BinanceSpotTrader()
-            logger.info("✅ BinanceSpotTrader (Testnet) 已就緒")
+        # 改成使用純 Testnet 交易器
+        self.trader = BinanceSpotTrader()
+        logger.info("✅ 已切換為純 Binance Spot Testnet 模式（本地只保留輕量 OCO 記錄）")
 
         logger.info(
-            f"✅ EnsembleSpotLiveTrader 初始化完成 | "
+            f"✅ EnsembleLiveTrader 初始化完成 | "
             f"標的數: {len(self.symbols)} | 門檻: {self.prob_threshold} | "
-            f"Top-K: {self.top_k if self.use_top_k else 'OFF'} | "
-            f"模式: {'DRY-RUN' if self.dry_run else 'LIVE TESTNET'}"
+            f"Top-K: {self.top_k if self.use_top_k else 'OFF'}"
         )
 
     async def _execute_inference_cycle(self) -> None:
@@ -129,23 +121,13 @@ class EnsembleSpotLiveTrader:
         except Exception as e:
             logger.error(f"❌ Telegram 推播失敗: {e}")
 
-        # 7. 實際下單（或 dry-run）
-        if self.dry_run:
-            long_candidates = execution_df[
-                execution_df["pred_proba"] >= self.prob_threshold
-            ]
-            if not long_candidates.empty:
-                logger.info("📝 [DRY-RUN] 本輪達標標的（不會真實下單）:")
-                for _, row in long_candidates.iterrows():
-                    logger.info(
-                        f"   • {row['symbol']} | 機率 {row['pred_proba']:.4f} | "
-                        f"價格 ${row['close']:.4f}"
-                    )
-            else:
-                logger.info("📝 [DRY-RUN] 本輪無達標標的")
-            return
+        # 7. 同步交易所與本地 OCO 狀態（避免重複開倉）
+        await self.trader.sync_and_cleanup_orders()
 
-        # ===== LIVE 下單 =====
+        # 8. 取得目前已在持的幣種（以交易所為準）
+        active_symbols = self.trader.get_active_symbols()
+
+        # 9. 實際下單（純 Testnet 模式，僅對未持倉且達標者執行）
         for _, row in execution_df.iterrows():
             symbol = row["symbol"]
             price = float(row["close"])
@@ -154,12 +136,8 @@ class EnsembleSpotLiveTrader:
             if prob < self.prob_threshold:
                 continue
 
-            # 檢查是否已有該幣種持倉（避免重複開倉）
-            open_symbols = [
-                p["symbol"] for p in self.trader.state.get("open_positions", [])
-            ]
-            if symbol in open_symbols:
-                logger.info(f"⏭️ {symbol} 已有持倉，跳過")
+            if symbol in active_symbols:
+                logger.info(f"⏭️ {symbol} 已在持倉，跳過")
                 continue
 
             logger.info(
@@ -179,8 +157,7 @@ class EnsembleSpotLiveTrader:
 
     async def run_scheduler(self) -> None:
         """整點對齊排程（每小時 00 分 01 秒觸發）"""
-        mode = "DRY-RUN" if self.dry_run else "LIVE TESTNET"
-        logger.info(f"🚀 EnsembleSpotLiveTrader 已啟動 ({mode})，等待下一個整點...")
+        logger.info("🚀 EnsembleLiveTrader 已啟動 (LIVE TESTNET)，等待下一個整點...")
 
         while True:
             now = datetime.now()
@@ -204,20 +181,15 @@ class EnsembleSpotLiveTrader:
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Ensemble Spot Testnet Trader")
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="只做預測與日誌，不實際下單（強烈建議先跑這個）",
-    )
+    parser = argparse.ArgumentParser(description="Ensemble Spot Testnet Trader (pure BinanceSpotTrader)")
     parser.add_argument(
         "--once",
         action="store_true",
-        help="只跑一次推論就結束（方便測試）",
+        help="只跑一次推論就結束（方便測試，會實際在 Testnet 下單）",
     )
     args = parser.parse_args()
 
-    trader = EnsembleSpotLiveTrader(dry_run=args.dry_run)
+    trader = EnsembleLiveTrader()
 
     async def main():
         try:

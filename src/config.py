@@ -74,7 +74,7 @@ ENSEMBLE_WEIGHTS = {
 # 4. 風控與網格甜點區設定 (Risk Management & OCO Order Parameters)
 # ==============================================================================
 # 初始資本與倉位控管
-INITIAL_CAPITAL = 10000.0  # USD
+INITIAL_CAPITAL = 7,287.90  # USD
 POSITION_SIZE_RATIO = 0.10  # 單筆下注當下 Equity 的 10%
 MAX_CONCURRENT_POSITIONS = 8  # 最大同時持倉數，防範全市場 Beta 連環跌
 
