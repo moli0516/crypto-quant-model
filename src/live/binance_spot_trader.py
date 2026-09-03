@@ -2,7 +2,7 @@
 src/live/binance_spot_trader.py
 ==============================================================================
 Binance Spot Testnet Order Execution & OCO Engine (CCXT)
-專為現貨市場設計：市價買入 USDT 顆數、精準數量精度裁切與現貨 OCO (TP/SL) 條件單發射。
+防禦性修復版：嚴格餘額上限校驗、動態金額裁切與交易所 Limits 安全攔截。
 ==============================================================================
 """
 
@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 class BinanceSpotTrader:
     """
-    幣安現貨 Testnet 實盤級下單執行器
+    幣安現貨 Testnet 實盤級下單執行器 (防禦性修復版)
     """
 
     def __init__(self):
@@ -53,7 +53,7 @@ class BinanceSpotTrader:
                 "adjustForTimeDifference": True,
             },
         })
-        self.exchange.set_sandbox_mode(True)   # ← 官方推薦方式
+        self.exchange.set_sandbox_mode(True)
 
         self.state_file = STATE_FILE
         self.trades_log_file = TRADES_LOG_FILE
@@ -82,61 +82,76 @@ class BinanceSpotTrader:
             logger.error(f"❌ 儲存狀態檔失敗: {e}")
 
     async def sync_account_balance(self) -> float:
-        """同步幣安 Spot Testnet 可用 USDT 餘額"""
+        """同步幣安 Spot Testnet 可用 USDT 餘額 (含防禦性例外處理)"""
         try:
             balance = await self.exchange.fetch_balance()
-            usdt_free = float(balance["USDT"]["free"])
-            usdt_total = float(balance["USDT"]["total"])
+            usdt_info = balance.get("USDT", {})
+            usdt_free = float(usdt_info.get("free", 0.0))
+            usdt_total = float(usdt_info.get("total", 0.0))
+
+            if usdt_free <= 0.0:
+                logger.warning("⚠️ [Spot Testnet] 交易所回傳 USDT 可用餘額 <= 0，降級使用本地狀態檔 cash")
+                return float(self.state.get("cash", INITIAL_CAPITAL))
+
             self.state["cash"] = usdt_free
             self.state["total_equity"] = usdt_total
             self._save_state(self.state)
-            return usdt_total
+            return usdt_free
         except Exception as e:
-            logger.error(f"⚠️ [Spot Testnet] 無法獲取帳戶餘額: {e}")
-            return self.state["total_equity"]
+            logger.error(f"⚠️ [Spot Testnet] 無法獲取帳戶餘額: {e} | 採用預設本金兜底")
+            return float(self.state.get("cash", INITIAL_CAPITAL))
 
     async def execute_spot_buy_with_oco(self, symbol: str, current_price: float, prob: float) -> bool:
         """
         現貨市價買入 + 現貨原生 OCO (TP Limit / SL Stop-Limit)
         """
-        formatted_symbol = symbol.replace("USDT", "/USDT")  # BTC/USDT
+        formatted_symbol = symbol.replace("USDT", "/USDT")  # e.g., UNI/USDT
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         await self.exchange.load_markets()
         market = self.exchange.market(formatted_symbol)
 
-        # 1. 計算下單金額與數量
-        equity = await self.sync_account_balance()
-        trade_amount_usd = equity * POSITION_SIZE_RATIO
+        # 1. 取得真實可用 USDT 餘額，防範資金透支
+        available_usdt = await self.sync_account_balance()
+        
+        # 計算單筆開倉金額，限制不超過實際可用 USDT 的 95%
+        trade_amount_usd = min(available_usdt * POSITION_SIZE_RATIO, available_usdt * 0.95)
 
-        if trade_amount_usd < 10.0:
-            logger.warning(f"⚠️ {symbol} 開倉金額 ${trade_amount_usd:.2f} 低於現貨 $10 Limit，跳過")
+        # 交易所最小下單門檻檢測 (Min Notional 預設為 10 USDT)
+        min_notional = float(market.get("limits", {}).get("cost", {}).get("min") or 10.0)
+        if trade_amount_usd < min_notional:
+            logger.warning(
+                f"⚠️ {symbol} 計算開倉金額 ${trade_amount_usd:.2f} 低於交易所最小名義限制 (${min_notional:.2f})，取消開倉"
+            )
             return False
 
+        # 2. 精準裁切數量與價格精度
         raw_qty = trade_amount_usd / current_price
         qty = float(self.exchange.amount_to_precision(formatted_symbol, raw_qty))
 
-        # 2. 計算 OCO 價格
+        if qty <= 0:
+            logger.warning(f"⚠️ {symbol} 裁切後下單數量為 0，跳過此開倉")
+            return False
+
         tp_price = float(self.exchange.price_to_precision(
             formatted_symbol, current_price * (1.0 + DEFAULT_TAKE_PROFIT_PCT)
         ))
         sl_stop_price = float(self.exchange.price_to_precision(
             formatted_symbol, current_price * (1.0 - DEFAULT_STOP_LOSS_PCT)
         ))
-        # SL Limit 稍微再低一點，確保能成交
         sl_limit_price = float(self.exchange.price_to_precision(
             formatted_symbol, sl_stop_price * 0.998
         ))
 
         try:
             # 3. 市價買入
-            logger.info(f"⚡ [Spot Buy Order] {symbol} Qty: {qty} @ ~${current_price:.4f}")
+            logger.info(f"⚡ [Spot Buy Order] {symbol} Qty: {qty} @ ~${current_price:.4f} (預估花費: ${trade_amount_usd:.2f})")
             buy_order = await self.exchange.create_market_buy_order(formatted_symbol, qty)
 
             filled_qty = float(buy_order.get("filled") or qty)
             filled_qty = float(self.exchange.amount_to_precision(formatted_symbol, filled_qty))
 
-            # 4. 掛 OCO 賣單（隱式 API）
+            # 4. 掛 OCO 賣單
             oco_params = {
                 "symbol": market["id"],
                 "side": "SELL",
@@ -150,7 +165,7 @@ class BinanceSpotTrader:
             logger.info(f"🛡️ [Spot OCO Order] 掛載 OCO 賣單 | TP: ${tp_price} | SL Stop: ${sl_stop_price}")
             oco_order = await self.exchange.private_post_order_oco(oco_params)
 
-            # 5. 更新本地狀態
+            # 5. 更新本地狀態檔
             new_pos = {
                 "trade_id": f"SPOT-{datetime.now().strftime('%Y%m%d%H%M')}-{symbol}",
                 "symbol": symbol,
@@ -162,12 +177,12 @@ class BinanceSpotTrader:
                 "tp_price": tp_price,
                 "sl_price": sl_stop_price,
                 "buy_order_id": buy_order.get("id"),
-                "oco_order_list_id": oco_order.get("orderListId"),  # OCO 回傳的是 orderListId
+                "oco_order_list_id": oco_order.get("orderListId"),
             }
             self.state["open_positions"].append(new_pos)
             self._save_state(self.state)
 
-            # 6. Telegram 通知
+            # 6. 推播 Telegram 成功訊息
             msg = (
                 f"🚀 *[BINANCE SPOT TESTNET] 現貨買入成功*\n"
                 f"-----------------------------------\n"
@@ -187,7 +202,7 @@ class BinanceSpotTrader:
             return False
         
     async def close(self):
-        """安全關閉 CCXT exchange 連線，釋放 aiohttp connector"""
+        """安全關閉 CCXT exchange 連線"""
         if hasattr(self, "exchange") and self.exchange is not None:
             try:
                 await self.exchange.close()
