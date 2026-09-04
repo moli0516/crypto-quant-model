@@ -101,6 +101,19 @@ async def get_usdt_balance() -> Optional[Dict[str, float]]:
             await trader.close()
 
 
+async def get_account_snapshot(prices: Dict[str, float]) -> Optional[Dict[str, Any]]:
+    trader = None
+    try:
+        trader = BinanceSpotTrader()
+        return await trader.get_account_snapshot(prices)
+    except Exception as exc:
+        logger.exception("Unable to fetch Testnet account snapshot: %s", exc)
+        return None
+    finally:
+        if trader is not None:
+            await trader.close()
+
+
 def order_pnl(order: Dict[str, Any], prices: Optional[Dict[str, float]] = None) -> Tuple[float, float]:
     entry = _number(order.get("entry_price"))
     quantity = _number(order.get("qty"))
@@ -110,7 +123,10 @@ def order_pnl(order: Dict[str, Any], prices: Optional[Dict[str, float]] = None) 
         if stored_pnl == stored_pnl:
             pnl = stored_pnl
         else:
-            pnl = quantity * _number(order.get("exit_price"), entry) - margin
+            exit_quantity = _number(order.get("exit_qty"), quantity)
+            exit_price = _number(order.get("exit_price"), entry)
+            fees = _number(order.get("fee_usd"))
+            pnl = (exit_price - entry) * exit_quantity - fees
     else:
         symbol = str(order.get("symbol", "")).upper()
         current = (prices or {}).get(symbol, entry)
@@ -147,25 +163,21 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     message = _message(update)
     orders = open_orders()
     prices = await asyncio.to_thread(get_binance_prices)
-    balance = await get_usdt_balance()
-    if balance is None:
-        await message.reply_text("❌ 無法取得 Binance Spot Testnet USDT 餘額。")
+    account = await get_account_snapshot(prices)
+    if account is None:
+        await message.reply_text("❌ 無法取得 Binance Spot Testnet 帳戶餘額。")
         return
     unrealized = sum(order_pnl(order, prices)[0] for order in orders)
-    position_value = sum(
-        _number(order.get("qty")) * prices.get(
-            str(order.get("symbol", "")).upper(), _number(order.get("entry_price"))
-        ) for order in orders
-    )
-    equity = balance["total"] + position_value
+    position_value = account["holding_value"]
+    equity = account["available_cash"] + position_value
     return_pct = (equity - INITIAL_CAPITAL) / INITIAL_CAPITAL * 100 if INITIAL_CAPITAL else 0.0
     mark = "🟢" if unrealized >= 0 else "🔴"
     await message.reply_text(
         "📊 *Binance Spot Testnet 總覽*\n-----------------------------------\n"
-        f"• USDT 可用: `${balance['free']:,.2f}`\n"
-        f"• USDT 總額: `${balance['total']:,.2f}`\n"
-        f"• OPEN 持倉市值: `${position_value:,.2f}`\n"
-        f"• 估算總權益: `${equity:,.2f}`\n"
+        f"• 可用現金 (USDT): `${account['available_cash']:,.2f}`\n"
+        f"• USDT 總額: `${account['usdt_total']:,.2f}`\n"
+        f"• 實際持倉市值: `${position_value:,.2f}`\n"
+        f"• 總權益 (USDT + 持倉): `${equity:,.2f}`\n"
         f"• 浮動未實現損益: {mark} `{_money(unrealized)}`\n"
         f"• 相對初始資金: `{return_pct:+.2f}%`\n"
         f"• OPEN 持倉數: `{len(orders)}`",

@@ -74,7 +74,7 @@ ENSEMBLE_WEIGHTS = {
 # 4. 風控與網格甜點區設定 (Risk Management & OCO Order Parameters)
 # ==============================================================================
 # 初始資本與倉位控管
-INITIAL_CAPITAL = 7,287.90  # USD
+INITIAL_CAPITAL = 7287.90  # USD
 POSITION_SIZE_RATIO = 0.10  # 單筆下注當下 Equity 的 10%
 MAX_CONCURRENT_POSITIONS = 8  # 最大同時持倉數，防範全市場 Beta 連環跌
 
@@ -91,9 +91,13 @@ IS_SPOT_TRADING = True               # 標記為現貨模式
 # ==============================================================================
 # 5. 日誌與歷史資料檔案路徑 (Data & Log Paths)
 # ==============================================================================
-STATE_FILE = str(LOGS_DIR / "paper_account_state.json")
+TRADING_ENV = os.getenv("BINANCE_TRADING_ENV", "demo").strip().lower()
+if TRADING_ENV not in {"demo", "testnet"}:
+    raise ValueError("BINANCE_TRADING_ENV must be 'demo' or 'testnet'")
+
+STATE_FILE = str(LOGS_DIR / f"paper_account_state_{TRADING_ENV}.json")
 INFERENCE_LOG_FILE = str(LOGS_DIR / "inference_history.csv")
-TRADES_LOG_FILE = str(LOGS_DIR / "paper_trades.csv")
+TRADES_LOG_FILE = str(LOGS_DIR / f"paper_trades_{TRADING_ENV}.csv")
 EQUITY_LOG_FILE = str(LOGS_DIR / "paper_equity_daily.csv")
 SLTP_REPORT_LOG_FILE = str(LOGS_DIR / "sltp_grid_report.csv")
 DIAGNOSTIC_IMG_FILE = str(LOGS_DIR / "diagnostic_report.png")

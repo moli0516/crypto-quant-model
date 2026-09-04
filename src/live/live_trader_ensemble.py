@@ -158,20 +158,26 @@ class EnsembleLiveTrader:
     async def run_scheduler(self) -> None:
         """整點對齊排程（每小時 00 分 01 秒觸發）"""
         logger.info("🚀 EnsembleLiveTrader 已啟動 (LIVE TESTNET)，等待下一個整點...")
+        order_monitor = asyncio.create_task(self.trader.monitor_order_status())
 
-        while True:
-            now = datetime.now()
-            next_hour = (now + timedelta(hours=1)).replace(
-                minute=0, second=1, microsecond=0
-            )
-            wait_seconds = (next_hour - now).total_seconds()
-            logger.info(f"⏳ 休眠 {wait_seconds:.0f} 秒後觸發下一次推論...")
-            await asyncio.sleep(wait_seconds)
+        try:
+            while True:
+                now = datetime.now()
+                next_hour = (now + timedelta(hours=1)).replace(
+                    minute=0, second=1, microsecond=0
+                )
+                wait_seconds = (next_hour - now).total_seconds()
+                logger.info(f"⏳ 休眠 {wait_seconds:.0f} 秒後觸發下一次推論...")
+                await asyncio.sleep(wait_seconds)
 
-            try:
-                await self._execute_inference_cycle()
-            except Exception as e:
-                logger.error(f"❌ 推論週期發生未預期錯誤: {e}", exc_info=True)
+                try:
+                    await self._execute_inference_cycle()
+                except Exception as e:
+                    logger.error(f"❌ 推論週期發生未預期錯誤: {e}", exc_info=True)
+        finally:
+            order_monitor.cancel()
+            await asyncio.gather(order_monitor, return_exceptions=True)
+            logger.info("🛑 Order-status monitor stopped")
 
     async def close(self):
         if self.trader is not None:
