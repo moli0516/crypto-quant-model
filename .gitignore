@@ -57,3 +57,4 @@ htmlcov/
 local-logs/
 test_conn.py
 .DS_Store
+cmd.md
