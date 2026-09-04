@@ -61,6 +61,7 @@ class BinanceSpotTrader:
             "options": {
                 "defaultType": "spot",
                 "adjustForTimeDifference": True,
+                "fetchOpenOrders": {"warnWithoutSymbol": False},
             },
         })
         if self.trading_environment == "demo":
@@ -174,8 +175,18 @@ class BinanceSpotTrader:
         OCO 成交後，以交易所成交資料補齊實際出場價格、數量、手續費與損益。
         """
         try:
-            # 取得所有未成交訂單
-            open_orders = await self.exchange.fetch_open_orders()
+            # 只查詢本地 OPEN 持倉，避免高成本的全市場查詢。
+            symbols = {
+                str(order.get("symbol", "")).upper()
+                for order in self.local_orders
+                if order.get("status") == "OPEN" and order.get("symbol")
+            }
+            open_orders = []
+            for symbol in symbols:
+                formatted_symbol = symbol.replace("USDT", "/USDT")
+                open_orders.extend(
+                    await self.exchange.fetch_open_orders(symbol=formatted_symbol)
+                )
             open_order_ids = {str(o["id"]) for o in open_orders}
             open_list_ids = {str(o.get("info", {}).get("orderListId", "")) for o in open_orders}
 
