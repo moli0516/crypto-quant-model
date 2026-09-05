@@ -193,7 +193,7 @@ async def positions_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await message.reply_text("🟢 目前沒有 status=OPEN 的持倉。")
         return
     prices = await asyncio.to_thread(get_binance_prices)
-    lines = [f"📦 *OPEN OCO 持倉 ({len(orders)} 筆)*", "-----------------------------------"]
+    lines = [f"📦 *OPEN 持倉 ({len(orders)} 筆)*", "-----------------------------------"]
     total_pnl = 0.0
     for order in orders:
         symbol = str(order.get("symbol", "UNKNOWN")).upper()
@@ -202,12 +202,15 @@ async def positions_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         pnl, pnl_pct = order_pnl(order, prices)
         total_pnl += pnl
         mark = "🟢" if pnl >= 0 else "🔴"
+        oco_status = str(order.get("oco_status", "ACTIVE")).upper()
+        protection = "🛡️ OCO ACTIVE" if oco_status == "ACTIVE" else f"⚠️ OCO {oco_status}"
         lines.append(
             f"• *{symbol}* | 數量 `{_number(order.get('qty')):.8f}`\n"
             f"  進場 `${entry:.8f}` / 現價 `${current:.8f}`\n"
             f"  浮動損益 {mark} `{_money(pnl)}` (`{pnl_pct:+.2f}%`)\n"
             f"  TP `${_number(order.get('tp_price')):.8f}` | SL `${_number(order.get('sl_price')):.8f}`\n"
-            f"  保證金 `${_number(order.get('margin_usd')):,.2f}` | 機率 `{_number(order.get('prob')) * 100:.2f}%`"
+            f"  保證金 `${_number(order.get('margin_usd')):,.2f}` | 機率 `{_number(order.get('prob')) * 100:.2f}%`\n"
+            f"  {protection}"
         )
     lines.append(f"-----------------------------------\n合計浮動損益: `{_money(total_pnl)}`")
     await message.reply_text("\n".join(lines), parse_mode="Markdown")

@@ -86,8 +86,17 @@ class BinanceSpotTrader:
                 data = json.load(f)
                 # 相容舊格式
                 if isinstance(data, dict) and "open_positions" in data:
-                    return data.get("open_positions", [])
+                    data = data.get("open_positions", [])
                 if isinstance(data, list):
+                    for order in data:
+                        if (
+                            isinstance(order, dict)
+                            and order.get("status") == "OPEN"
+                            and order.get("oco_status") is None
+                        ):
+                            order["oco_status"] = (
+                                "ACTIVE" if order.get("oco_order_list_id") else "FAILED"
+                            )
                     return data
                 return []
         except Exception as e:
@@ -108,6 +117,30 @@ class BinanceSpotTrader:
     def get_open_orders(self) -> List[Dict[str, Any]]:
         """回傳目前本地記錄的 OPEN 訂單"""
         return [o for o in self.local_orders if o.get("status") == "OPEN"]
+
+    async def reconcile_exchange_buys(self, since_hours: int = 48) -> int:
+        """Import filled exchange buys missing from the local state file."""
+        from scripts.reconcile_demo_state import (
+            backfill_risk_levels,
+            fetch_orders,
+            reconcile,
+        )
+
+        updated = backfill_risk_levels(self.local_orders)
+        exchange_orders = await fetch_orders(max_pages=1, since_hours=since_hours)
+        additions = reconcile(exchange_orders, self.local_orders)
+        if additions or updated:
+            self.local_orders.extend(additions)
+            self._save_local_orders()
+            logger.warning(
+                "⚠️ Reconciled %d missing filled buy(s), updated %d risk level(s) in %s",
+                len(additions),
+                updated,
+                self.orders_file,
+            )
+        else:
+            logger.info("✅ Local order state is synchronized with the exchange")
+        return len(additions)
 
     # ------------------------------------------------------------------
     # 交易所即時資訊
@@ -384,11 +417,42 @@ class BinanceSpotTrader:
             if entry_fee <= 0.0:
                 entry_fee = avg_price * filled_qty * TRANSACTION_FEE_RATE
 
-            # 5. 掛 OCO
+            record = {
+                "trade_id": f"SPOT-{datetime.now().strftime('%Y%m%d%H%M%S')}-{symbol}",
+                "symbol": symbol,
+                "status": "OPEN",
+                "oco_status": "PENDING",
+                "entry_time": now_str,
+                "entry_price": avg_price,
+                "qty": filled_qty,
+                "margin_usd": round(filled_qty * avg_price, 4),
+                "entry_fee_usd": round(entry_fee, 8),
+                "prob": prob,
+                "tp_price": tp_price,
+                "sl_price": sl_stop_price,
+                "buy_order_id": buy_order.get("id"),
+                "oco_order_list_id": None,
+                "oco_order_ids": [],
+            }
+            self.local_orders.append(record)
+            self._save_local_orders()
+
+            balance = await self.exchange.fetch_balance()
+            base_asset = market["base"]
+            base_wallet = balance.get(base_asset, {})
+            available_qty = float(base_wallet.get("free") or 0.0)
+            oco_qty = min(filled_qty, available_qty)
+            oco_qty = float(self.exchange.amount_to_precision(formatted_symbol, oco_qty))
+            if oco_qty <= 0.0:
+                raise ValueError(
+                    f"No free {base_asset} balance available for OCO "
+                    f"(filled={filled_qty}, free={available_qty})"
+                )
+
             oco_params = {
                 "symbol": market["id"],
                 "side": "SELL",
-                "quantity": self.exchange.amount_to_precision(formatted_symbol, filled_qty),
+                "quantity": self.exchange.amount_to_precision(formatted_symbol, oco_qty),
                 "price": self.exchange.price_to_precision(formatted_symbol, tp_price),
                 "stopPrice": self.exchange.price_to_precision(formatted_symbol, sl_stop_price),
                 "stopLimitPrice": self.exchange.price_to_precision(formatted_symbol, sl_limit_price),
@@ -405,29 +469,14 @@ class BinanceSpotTrader:
                 if item.get("orderId") or item.get("id")
             ]
 
-            # 6. 寫入本地輕量記錄
-            record = {
-                "trade_id": f"SPOT-{datetime.now().strftime('%Y%m%d%H%M%S')}-{symbol}",
-                "symbol": symbol,
-                "status": "OPEN",
-                "entry_time": now_str,
-                "entry_price": avg_price,
-                "qty": filled_qty,
-                "margin_usd": round(filled_qty * avg_price, 4),
-                "entry_fee_usd": round(entry_fee, 8),
-                "prob": prob,
-                "tp_price": tp_price,
-                "sl_price": sl_stop_price,
-                "buy_order_id": buy_order.get("id"),
-                "oco_order_list_id": oco_list_id,
-                "oco_order_ids": oco_order_ids,
-            }
-            self.local_orders.append(record)
+            record["oco_status"] = "ACTIVE"
+            record["oco_order_list_id"] = oco_list_id
+            record["oco_order_ids"] = oco_order_ids
             self._save_local_orders()
 
             # 7. Telegram 通知
             msg = (
-                f"🚀 *[SPOT TESTNET] 開倉成功*\n"
+                f"🚀 *[SPOT {self.trading_environment.title()}] 開倉成功*\n"
                 f"-----------------------------------\n"
                 f"• *標的*: `{symbol}`\n"
                 f"• *買入均價*: `${avg_price:.4f}`\n"
@@ -441,8 +490,21 @@ class BinanceSpotTrader:
             return True
 
         except Exception as e:
-            logger.error(f"❌ [Spot Testnet Failed] {symbol}: {e}")
-            send_telegram_alert(f"🚨 *[SPOT TESTNET ERROR]* `{symbol}` 開倉失敗:\n`{e}`")
+            if "record" in locals():
+                record["oco_status"] = "FAILED"
+                record["oco_error"] = str(e)
+                self._save_local_orders()
+            logger.error(f"❌ [Spot Buy/OCO Failed] {symbol}: {e}")
+            if "record" in locals():
+                send_telegram_alert(
+                    f"🚨 *[SPOT {self.trading_environment.title()} ERROR]* `{symbol}` "
+                    f"買入成功，但 OCO 掛單失敗；持倉未受保護:\n`{e}`"
+                )
+            else:
+                send_telegram_alert(
+                    f"🚨 *[SPOT {self.trading_environment.title()} ERROR]* `{symbol}` "
+                    f"開倉失敗:\n`{e}`"
+                )
             return False
 
     async def close(self):

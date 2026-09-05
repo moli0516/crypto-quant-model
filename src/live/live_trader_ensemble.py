@@ -158,6 +158,10 @@ class EnsembleLiveTrader:
     async def run_scheduler(self) -> None:
         """整點對齊排程（每小時 00 分 01 秒觸發）"""
         logger.info("🚀 EnsembleLiveTrader 已啟動 (LIVE TESTNET)，等待下一個整點...")
+        try:
+            await self.trader.reconcile_exchange_buys()
+        except Exception:
+            logger.exception("⚠️ 啟動時無法同步交易所訂單；沿用本地狀態")
         order_monitor = asyncio.create_task(self.trader.monitor_order_status())
 
         try:
@@ -200,6 +204,7 @@ if __name__ == "__main__":
     async def main():
         try:
             if args.once:
+                await trader.reconcile_exchange_buys()
                 await trader._execute_inference_cycle()
             else:
                 await trader.run_scheduler()
