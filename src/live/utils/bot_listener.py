@@ -20,14 +20,29 @@ from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Upd
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
 
 from src.config import (
+    ACTIVE_SYMBOLS,
+    BASELINE_HOLD_HOURS,
+    DEFAULT_STOP_LOSS_PCT,
+    DEFAULT_TAKE_PROFIT_PCT,
     DIAGNOSTIC_IMG_FILE,
+    ENSEMBLE_WEIGHTS,
     EQUITY_LOG_FILE,
+    FEATURE_TIMEFRAME,
     INITIAL_CAPITAL,
+    IS_SPOT_TRADING,
+    MAX_CONCURRENT_POSITIONS,
+    MODEL_PATHS,
+    POSITION_SIZE_RATIO,
+    PROB_THRESHOLD,
     REPORT_IMG_FILE,
     SLTP_REPORT_IMG_FILE,
     STATE_FILE,
     TELEGRAM_BOT_TOKEN,
+    TOP_K_SIGNALS,
     TRADES_LOG_FILE,
+    TRADING_ENV,
+    USE_ENSEMBLE,
+    USE_TOP_K_FILTER,
 )
 from src.live.binance_spot_trader import BinanceSpotTrader
 
@@ -147,6 +162,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await _message(update).reply_text(
         "🤖 *Ensemble Spot Quant Bot*\n\n"
         "/status - Binance 餘額與即時持倉總覽\n"
+        "/config - 顯示目前交易配置\n"
         "/positions - OPEN OCO 持倉細節\n"
         "/history - CLOSED 歷史訂單\n"
         "/report - 已實現損益 Equity Curve\n"
@@ -154,6 +170,30 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "/perf - 勝率與累計損益\n"
         "/sltp - SL/TP 回測圖\n"
         "/help - 顯示本選單",
+        parse_mode="Markdown",
+    )
+
+
+async def config_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    del context
+    await _message(update).reply_text(
+        "⚙️ *交易配置*\n-----------------------------------\n"
+        f"• 交易環境: `{TRADING_ENV}`\n"
+        f"• 交易模式: `{'現貨' if IS_SPOT_TRADING else '其他'}`\n"
+        f"• K 線週期: `{FEATURE_TIMEFRAME}`\n"
+        f"• 訊號門檻: `{PROB_THRESHOLD * 100:.1f}%`\n"
+        f"• Baseline 持倉: `{BASELINE_HOLD_HOURS} 小時`\n"
+        f"• Ensemble: `{'啟用' if USE_ENSEMBLE else '停用'}`\n"
+        f"• 模型權重: `{ENSEMBLE_WEIGHTS}`\n"
+        f"• 最大持倉數: `{MAX_CONCURRENT_POSITIONS}`\n"
+        f"• 單筆倉位比例: `{POSITION_SIZE_RATIO * 100:.1f}%`\n"
+        f"• TP / SL: `{DEFAULT_TAKE_PROFIT_PCT * 100:.1f}% / {DEFAULT_STOP_LOSS_PCT * 100:.1f}%`\n"
+        f"• Top-K 篩選: `{'啟用' if USE_TOP_K_FILTER else '停用'}`"
+        f"{f' (前 {TOP_K_SIGNALS} 名)' if USE_TOP_K_FILTER else ''}\n"
+        f"• 初始資金: `${INITIAL_CAPITAL:,.2f}`\n"
+        f"• 有效標的: `{', '.join(ACTIVE_SYMBOLS)}`\n"
+        f"• 模型檔案: `{', '.join(MODEL_PATHS.values())}`\n"
+        f"• Telegram Token: `{'已設定' if TELEGRAM_BOT_TOKEN else '未設定'}`",
         parse_mode="Markdown",
     )
 
@@ -398,7 +438,8 @@ async def perf_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def post_init(application: Application) -> None:
     await application.bot.set_my_commands([
         BotCommand("start", "顯示指令選單"), BotCommand("help", "顯示指令選單"),
-        BotCommand("status", "帳戶總覽"), BotCommand("positions", "OPEN 持倉"),
+        BotCommand("status", "帳戶總覽"), BotCommand("config", "交易配置"),
+        BotCommand("positions", "OPEN 持倉"),
         BotCommand("history", "CLOSED 歷史"), BotCommand("report", "Equity Curve"),
         BotCommand("diag", "模型診斷"), BotCommand("perf", "策略績效"),
         BotCommand("sltp", "SL/TP 回測"),
@@ -412,6 +453,7 @@ def main() -> None:
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).post_init(post_init).build()
     application.add_handler(CommandHandler(["start", "help"], start_command))
     application.add_handler(CommandHandler("status", status_command))
+    application.add_handler(CommandHandler("config", config_command))
     application.add_handler(CommandHandler("positions", positions_command))
     application.add_handler(CommandHandler("history", history_command))
     application.add_handler(CommandHandler("report", report_command))
