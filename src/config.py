@@ -49,7 +49,7 @@ ACTIVE_SYMBOLS = [sym for sym in TARGET_SYMBOLS if sym not in SYMBOL_BLACKLIST]
 # 3. 訊號推論與 Ensemble 模型設定 (Inference & Model Ensemble)
 # ==============================================================================
 # 訊號發射機率門檻 (Probability Threshold)
-PROB_THRESHOLD = 0.54
+PROB_THRESHOLD = 0.53
 
 # 推論與 K 線時間週期
 FEATURE_TIMEFRAME = "1h"  # 特徵生成週期
@@ -74,13 +74,13 @@ ENSEMBLE_WEIGHTS = {
 # 4. 風控與網格甜點區設定 (Risk Management & OCO Order Parameters)
 # ==============================================================================
 # 初始資本與倉位控管
-INITIAL_CAPITAL = 10015.05  # USD
+INITIAL_CAPITAL = 10000  # USD
 POSITION_SIZE_RATIO = 0.10  # 單筆下注當下 Equity 的 10%
 MAX_CONCURRENT_POSITIONS = 8  # 最大同時持倉數，防範全市場 Beta 連環跌
 
 # 🎯 網格搜尋（1m K 線碰撞）產出之最新風控甜點區
-DEFAULT_TAKE_PROFIT_PCT = 0.04  # TP 2.5%
-DEFAULT_STOP_LOSS_PCT = 0.01    # SL 4.0%
+DEFAULT_TAKE_PROFIT_PCT = 0.04  # TP 4%
+DEFAULT_STOP_LOSS_PCT = 0.01    # SL 1%
 
 # 交易手續費率 (Binance Standard Spot Fee: 0.10%)
 TRANSACTION_FEE_RATE = 0.0010
