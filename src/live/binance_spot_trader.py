@@ -12,7 +12,7 @@ import os
 import json
 import logging
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional
 
 import ccxt.async_support as ccxt
@@ -23,6 +23,7 @@ from src.config import (
     POSITION_SIZE_RATIO,
     DEFAULT_TAKE_PROFIT_PCT,
     DEFAULT_STOP_LOSS_PCT,
+    BASELINE_HOLD_HOURS,
     STATE_FILE,               # 我們改用這個檔案存輕量訂單記錄
     LOGS_DIR,
     TRADES_LOG_FILE,
@@ -259,8 +260,84 @@ class BinanceSpotTrader:
             if changed:
                 self._save_local_orders()
 
+            await self._close_expired_positions()
+
         except Exception as e:
             logger.warning(f"⚠️ 同步訂單狀態時發生錯誤: {e}")
+
+    async def _close_expired_positions(self) -> None:
+        """Market-sell positions that have exceeded the configured holding time."""
+        now = datetime.now()
+        expiry = timedelta(hours=BASELINE_HOLD_HOURS)
+
+        for order in self.local_orders:
+            if order.get("status") != "OPEN":
+                continue
+
+            try:
+                entry_time = datetime.strptime(
+                    str(order.get("entry_time")), "%Y-%m-%d %H:%M:%S"
+                )
+            except (TypeError, ValueError):
+                logger.warning("⚠️ %s 進場時間無效，跳過到期平倉", order.get("symbol"))
+                continue
+
+            if now < entry_time + expiry:
+                continue
+
+            symbol = str(order.get("symbol", "")).upper()
+            formatted_symbol = symbol.replace("USDT", "/USDT")
+            logger.info("⏱️ %s 已持有 %.1f 小時，執行到期市價平倉", symbol, BASELINE_HOLD_HOURS)
+
+            try:
+                open_orders = await self.exchange.fetch_open_orders(symbol=formatted_symbol)
+                known_ids = {str(item) for item in order.get("oco_order_ids", [])}
+                oco_id = str(order.get("oco_order_list_id") or "")
+                for exchange_order in open_orders:
+                    exchange_order_id = str(exchange_order.get("id"))
+                    exchange_oco_id = str(
+                        (exchange_order.get("info") or {}).get("orderListId") or ""
+                    )
+                    if known_ids and exchange_order_id not in known_ids:
+                        if not oco_id or exchange_oco_id != oco_id:
+                            continue
+                    elif not known_ids and oco_id and exchange_oco_id != oco_id:
+                        continue
+                    await self.exchange.cancel_order(
+                        exchange_order["id"], formatted_symbol
+                    )
+
+                await self.exchange.load_markets()
+                market = self.exchange.market(formatted_symbol)
+                balance = await self.exchange.fetch_balance()
+                base_asset = market["base"]
+                available_qty = float(
+                    (balance.get(base_asset) or {}).get("free") or 0.0
+                )
+                sell_qty = min(float(order.get("qty") or 0.0), available_qty)
+                sell_qty = float(
+                    self.exchange.amount_to_precision(formatted_symbol, sell_qty)
+                )
+                if sell_qty <= 0.0:
+                    raise ValueError(f"No free {base_asset} balance available for timeout sell")
+
+                exit_order = await self.exchange.create_market_sell_order(
+                    formatted_symbol, sell_qty
+                )
+                if float(exit_order.get("filled") or 0.0) <= 0.0:
+                    exit_order["filled"] = sell_qty
+                if not float(
+                    exit_order.get("average") or exit_order.get("price") or 0.0
+                ):
+                    raise ValueError("Timeout sell returned no execution price")
+
+                self._apply_close_data(order, exit_order, close_reason="H12_TIMEOUT")
+                self._save_local_orders()
+                self._append_realized_trade(order)
+                self._notify_closed_order(order)
+                logger.info("✅ %s 到期市價平倉完成 | PnL $%.4f", symbol, order["pnl_usd"])
+            except Exception as e:
+                logger.error("❌ %s 到期平倉失敗，保留 OPEN 狀態: %s", symbol, e)
 
     def _notify_closed_order(self, order: Dict[str, Any]) -> None:
         pnl = float(order.get("pnl_usd") or 0.0)
@@ -318,7 +395,12 @@ class BinanceSpotTrader:
             total += amount if currency == quote else amount * price if currency == base else 0.0
         return total
 
-    def _apply_close_data(self, order: Dict[str, Any], exit_order: Dict[str, Any]) -> None:
+    def _apply_close_data(
+        self,
+        order: Dict[str, Any],
+        exit_order: Dict[str, Any],
+        close_reason: str = "OCO_FILLED",
+    ) -> None:
         entry_price = float(order.get("entry_price") or 0.0)
         exit_qty = float(exit_order.get("filled") or 0.0)
         exit_price = float(exit_order.get("average") or exit_order.get("price") or 0.0)
@@ -336,7 +418,7 @@ class BinanceSpotTrader:
         order.update({
             "status": "CLOSED",
             "close_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "close_reason": "OCO_FILLED",
+            "close_reason": close_reason,
             "exit_price": exit_price,
             "exit_qty": exit_qty,
             "fee_usd": round(entry_fee + exit_fee, 8),
