@@ -4,9 +4,10 @@ import argparse
 import asyncio
 import json
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
+from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 import ccxt.async_support as ccxt
@@ -21,6 +22,9 @@ TARGET_SYMBOLS = [
 ]
 TAKE_PROFIT_PCT = 0.04
 STOP_LOSS_PCT = 0.01
+RECONCILE_START_HK = datetime(
+    2026, 9, 7, 12, 0, tzinfo=ZoneInfo("Asia/Hong_Kong")
+)
 
 
 def _clean(value: str) -> str:
@@ -128,7 +132,7 @@ def _save_state(path: Path, records: List[Dict[str, Any]]) -> None:
     temporary.replace(path)
 
 
-async def fetch_orders(max_pages: int, since_hours: int) -> List[Dict[str, Any]]:
+async def fetch_orders(max_pages: int, since_hours: int = 48) -> List[Dict[str, Any]]:
     load_dotenv(override=True)
     environment = os.getenv("BINANCE_TRADING_ENV", "demo").strip().lower()
     prefix = "BINANCE_SPOT_DEMO" if environment == "demo" else "BINANCE_SPOT_TESTNET"
@@ -148,7 +152,8 @@ async def fetch_orders(max_pages: int, since_hours: int) -> List[Dict[str, Any]]
     else:
         exchange.set_sandbox_mode(True)
 
-    since = int((datetime.now(timezone.utc) - timedelta(hours=since_hours)).timestamp() * 1000)
+    # Reconciliation intentionally starts at the fixed Hong Kong cutoff.
+    since = int(RECONCILE_START_HK.astimezone(timezone.utc).timestamp() * 1000)
     try:
         await exchange.load_markets()
         collected: Dict[str, Dict[str, Any]] = {}
@@ -159,6 +164,9 @@ async def fetch_orders(max_pages: int, since_hours: int) -> List[Dict[str, Any]]
             except ccxt.ExchangeError:
                 continue
             for order in orders:
+                order_timestamp = order.get("timestamp")
+                if order_timestamp is not None and float(order_timestamp) < since:
+                    continue
                 order_id = str(order.get("id") or "")
                 if order_id:
                     collected[order_id] = order
@@ -203,7 +211,12 @@ def reconcile(orders: List[Dict[str, Any]], state: List[Dict[str, Any]]) -> List
 
 async def main() -> None:
     parser = argparse.ArgumentParser(description="Reconcile Binance Demo buys into local state.")
-    parser.add_argument("--since-hours", type=int, default=48)
+    parser.add_argument(
+        "--since-hours",
+        type=int,
+        default=48,
+        help="Legacy compatibility option; the fixed HKT cutoff is always used.",
+    )
     parser.add_argument("--max-pages", type=int, default=1, help="Reserved for CLI compatibility.")
     parser.add_argument("--apply", action="store_true", help="Write imported records to local state.")
     args = parser.parse_args()
