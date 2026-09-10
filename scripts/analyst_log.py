@@ -8,8 +8,10 @@ Institutional-Grade 2x2 Dark Theme Model Diagnostic Report Generator
 
 import os
 import sys
+import logging
 import pandas as pd
 import numpy as np
+import requests
 import matplotlib
 matplotlib.use("Agg")  # 無 GUI 環境 (如 EC2 或背景服務) 繪圖必備
 import matplotlib.pyplot as plt
@@ -46,6 +48,54 @@ PLT_STYLE_CONFIG = {
 }
 plt.rcParams.update(PLT_STYLE_CONFIG)
 
+logger = logging.getLogger(__name__)
+
+
+def fetch_btc_minute_prices(start_dt: pd.Timestamp, end_dt: pd.Timestamp) -> pd.DataFrame:
+    """Fetch Binance 1-minute BTCUSDT closes for the diagnostic time range."""
+    start_ms = int(start_dt.timestamp() * 1000)
+    end_ms = int(end_dt.timestamp() * 1000)
+    rows = []
+    cursor = start_ms
+
+    try:
+        while cursor <= end_ms:
+            response = requests.get(
+                "https://api.binance.com/api/v3/klines",
+                params={
+                    "symbol": "BTCUSDT",
+                    "interval": "1m",
+                    "startTime": cursor,
+                    "endTime": end_ms,
+                    "limit": 1000,
+                },
+                timeout=10,
+            )
+            response.raise_for_status()
+            batch = response.json()
+            if not batch:
+                break
+            rows.extend(batch)
+            next_cursor = int(batch[-1][0]) + 60_000
+            if next_cursor <= cursor:
+                break
+            cursor = next_cursor
+
+        if not rows:
+            return pd.DataFrame()
+
+        minute_df = pd.DataFrame(rows, columns=[
+            "timestamp", "open", "high", "low", "close", "volume",
+            "close_time", "quote_volume", "trades", "taker_base_volume",
+            "taker_quote_volume", "ignore",
+        ])
+        minute_df["dt"] = pd.to_datetime(minute_df["timestamp"], unit="ms", utc=True)
+        minute_df["close"] = pd.to_numeric(minute_df["close"])
+        return minute_df[["dt", "close"]].drop_duplicates("dt").sort_values("dt")
+    except (requests.RequestException, ValueError, TypeError) as exc:
+        logger.warning("Unable to fetch BTC 1-minute prices: %s", exc)
+        return pd.DataFrame()
+
 
 def generate_diagnostic_report(
     csv_path: str = INFERENCE_LOG_FILE,
@@ -72,7 +122,7 @@ def generate_diagnostic_report(
 
     # 時間戳記防禦轉型
     time_col = 'dt' if 'dt' in df.columns else 'timestamp'
-    df['dt'] = pd.to_datetime(df[time_col])
+    df['dt'] = pd.to_datetime(df[time_col], utc=True)
     
     # 防禦性讀取歷史平倉紀錄
     df_trades = pd.DataFrame()
@@ -197,9 +247,12 @@ def generate_diagnostic_report(
         price_col = 'close_price' if 'close_price' in btc_df.columns else ('close' if 'close' in btc_df.columns else None)
         
         if price_col:
+            minute_df = fetch_btc_minute_prices(btc_df['dt'].min(), btc_df['dt'].max())
+            price_df = minute_df if not minute_df.empty else btc_df[['dt', price_col]].rename(columns={price_col: 'close'})
+
             ax4.set_xlabel('Timestamp', fontsize=10, labelpad=8)
             ax4.set_ylabel('BTC Close Price ($)', color=color_price, fontweight='bold', labelpad=8)
-            ax4.plot(btc_df['dt'], btc_df[price_col], color=color_price, linewidth=1.8, marker='s', markersize=3, label='BTC Price', alpha=0.9)
+            ax4.plot(price_df['dt'], price_df['close'], color=color_price, linewidth=1.0, label='BTC 1-minute Price', alpha=0.9)
             ax4.tick_params(axis='y', labelcolor=color_price)
             
             ax4_twin = ax4.twinx()
@@ -208,7 +261,7 @@ def generate_diagnostic_report(
             ax4_twin.tick_params(axis='y', labelcolor=color_prob)
             ax4_twin.axhline(prob_threshold, color='#E53E3E', linestyle=':', label=f'Threshold ({prob_threshold})')
             
-            ax4.set_title('BTCUSDT: Price vs Model Confidence Correlation', fontsize=12, fontweight='bold', pad=10)
+            ax4.set_title('BTCUSDT: 1-minute Price vs Model Confidence', fontsize=12, fontweight='bold', pad=10)
             
             # 防禦 X 軸標籤重疊
             ax4.xaxis.set_major_locator(MaxNLocator(nbins=6))
