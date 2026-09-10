@@ -17,5 +17,5 @@ RUN pip install --no-cache-dir -r requirements.txt
 # 複製專案原始碼
 COPY . .
 
-# 預設啟動命令（可依需求調整）
-CMD ["python", "cli.py", "--help"]
+# 預設啟動 24/7 Ensemble 現貨交易服務
+CMD ["python", "-m", "src.live.live_trader_ensemble"]

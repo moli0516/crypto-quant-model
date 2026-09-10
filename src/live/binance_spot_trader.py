@@ -186,6 +186,37 @@ class BinanceSpotTrader:
             "holdings": holdings,
         }
 
+    async def get_total_equity(self, symbol: str, current_price: float) -> float:
+        """Return total USDT-denominated equity from the exchange account."""
+        balance = await self.exchange.fetch_balance()
+        usdt = balance.get("USDT", {})
+        if not isinstance(usdt, dict):
+            usdt = {}
+
+        equity = float(usdt.get("total") or 0.0)
+        for asset, wallet in balance.items():
+            if asset in {"info", "free", "used", "total", "USDT"}:
+                continue
+            if not isinstance(wallet, dict):
+                continue
+
+            amount = float(wallet.get("total") or 0.0)
+            if amount <= 0.0:
+                continue
+
+            holding_symbol = f"{asset}/USDT"
+            price = current_price if holding_symbol.replace("/", "") == symbol else 0.0
+            if not price:
+                try:
+                    ticker = await self.exchange.fetch_ticker(holding_symbol)
+                    price = float(ticker.get("last") or ticker.get("close") or 0.0)
+                except Exception:
+                    logger.warning("⚠️ Unable to value %s holding for equity", asset)
+                    continue
+            equity += amount * price
+
+        return equity
+
     async def sync_and_cleanup_orders(self) -> None:
         """Serialize exchange reconciliation so concurrent polls cannot duplicate closes."""
         async with self._sync_lock:
@@ -465,12 +496,19 @@ class BinanceSpotTrader:
         await self.exchange.load_markets()
         market = self.exchange.market(formatted_symbol)
 
-        # 2. 計算下單金額
+        # 2. Calculate order amount from total account equity.
         usdt = await self.get_usdt_balance()
-        trade_amount_usd = usdt["free"] * POSITION_SIZE_RATIO
+        total_equity = await self.get_total_equity(symbol, current_price)
+        trade_amount_usd = total_equity * POSITION_SIZE_RATIO
 
         if trade_amount_usd < 11.0:  # 留一點緩衝
-            logger.warning(f"⚠️ {symbol} 可用金額不足 (${trade_amount_usd:.2f})，跳過")
+            logger.warning(f"⚠️ {symbol} 權益下單金額不足 (${trade_amount_usd:.2f})，跳過")
+            return False
+        if trade_amount_usd > usdt["free"]:
+            logger.warning(
+                f"⚠️ {symbol} 可用 USDT 不足 (${usdt['free']:.2f} / "
+                f"${trade_amount_usd:.2f})，跳過"
+            )
             return False
 
         raw_qty = trade_amount_usd / current_price

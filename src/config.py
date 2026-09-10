@@ -75,11 +75,11 @@ ENSEMBLE_WEIGHTS = {
 # ==============================================================================
 # 初始資本與倉位控管
 INITIAL_CAPITAL = 10000  # USD
-POSITION_SIZE_RATIO = 0.10  # 單筆下注當下 Equity 的 10%
+POSITION_SIZE_RATIO = 0.10  # 單筆現貨下單使用總權益的 10%
 MAX_CONCURRENT_POSITIONS = 8  # 最大同時持倉數，防範全市場 Beta 連環跌
 
 # 🎯 網格搜尋（1m K 線碰撞）產出之最新風控甜點區
-DEFAULT_TAKE_PROFIT_PCT = 0.04  # TP 4%
+DEFAULT_TAKE_PROFIT_PCT = 0.01  # TP 4%
 DEFAULT_STOP_LOSS_PCT = 0.01    # SL 1%
 
 # 交易手續費率 (Binance Standard Spot Fee: 0.10%)
